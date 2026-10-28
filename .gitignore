@@ -1,0 +1,18 @@
+# Godot: import cache and editor state (rebuilt on open), Android build template (reinstalled from the editor)
+godot/.godot/
+godot/android/
+
+# Builds and signing keys: never commit release keystores
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Web / Capacitor
+node_modules/
+android/
+
+# Local tooling
+.claude/
+.DS_Store
+Thumbs.db

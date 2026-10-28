@@ -1,0 +1,4 @@
+# Normalize line endings so Windows and other machines share the same files.
+* text=auto eol=lf
+*.webp binary
+*.png binary

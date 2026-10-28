@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F2F6F2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1714" media="(prefers-color-scheme: dark)">
+<meta name="description" content="A relaxing picture sliding puzzle with an included offline image gallery or your own photo.">
+<link rel="manifest" href="manifest.webmanifest">
+<script>
+  // Apply a saved Light/Dark choice before first paint, so the page never flashes the other theme.
+  try {
+    const mode = (JSON.parse(localStorage.getItem('fixme-save-v1') || 'null') || {}).themeMode;
+    if (mode === 'light' || mode === 'dark') document.documentElement.dataset.theme = mode;
+  } catch { /* Storage may be unavailable; follow the device theme. */ }
+</script>
+<title>Fixme - A sliding puzzle to slide your time.</title>
+<style>
+/* Layout: one-screen game. Top bar, a board that fills the free space, a status line, and a thumb-reach action bar.
+   Board = a top band (spare slot left, stats middle, goal thumbnail right) over an N×N grid. */
+:root {
+  --bg: #F2F6F2;
+  --fg: #17352E;
+  --muted: #61776F;
+  --well: #E0EAE4;
+  --panel: #FFFFFF;
+  --line: #D5E2DB;
+  --accent: #087F67;
+  --accent-ink: #FFFFFF;
+  --win: #B5650F;
+  --display: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  --body: "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1714; --fg: #E2ECE8; --muted: #92A39D; --well: #1B2622; --panel: #16201C;
+    --line: #2F3D37; --accent: #3CCB9F; --accent-ink: #082019; --win: #F0A54A; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1714; --fg: #E2ECE8; --muted: #92A39D; --well: #1B2622; --panel: #16201C;
+  --line: #2F3D37; --accent: #3CCB9F; --accent-ink: #082019; --win: #F0A54A; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+html { overflow: hidden; overscroll-behavior: none; }
+body {
+  margin: 0; height: 100vh; height: 100dvh; overflow: hidden;
+  background: radial-gradient(ellipse at 50% -8%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 58%), var(--bg);
+  color: var(--fg); font-family: var(--body); font-size: 15px;
+  -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+#file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+.app {
+  height: 100%; max-width: 620px; margin: 0 auto;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "top" "stage" "hint" "actions"; gap: 6px;
+  padding: max(10px, env(safe-area-inset-top, 0px)) max(14px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(14px, env(safe-area-inset-left, 0px));
+}
+
+/* Top bar */
+.topbar { grid-area: top; display: flex; align-items: center; gap: 12px; min-height: 52px; }
+.brand-mark {
+  flex: 0 0 42px; height: 42px; display: grid; place-items: center; border-radius: 13px; color: #fff; font-size: 0;
+  background: url("./icon.svg") center/cover no-repeat; box-shadow: 0 4px 12px #087f6740;
+}
+.title-block { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.image-title {
+  margin: 0; font-family: var(--display); font-weight: 800; font-size: 1.08rem; letter-spacing: -.01em; line-height: 1.15;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.level-chip {
+  justify-self: start; padding: 3px 9px; border-radius: 999px; font-size: .66rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.icon-btn {
+  flex: 0 0 46px; height: 46px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); color: var(--fg); cursor: pointer; transition: transform .15s ease;
+}
+.icon-btn:active { transform: scale(.93); }
+
+/* Board */
+.stage { grid-area: stage; min-height: 0; display: grid; place-items: center; padding: 14px 12px; container-type: size; }
+.board {
+  --n: 3;
+  position: relative; isolation: isolate; margin: 0 auto;
+  width: min(100%, 52vh, 460px);
+  width: min(100cqw, calc(100cqh * var(--n) / (var(--n) + 1)), 560px);
+  aspect-ratio: var(--n) / calc(var(--n) + 1);
+  touch-action: none;
+}
+.board::before {
+  content: ""; position: absolute; z-index: -1; inset: -10px; border: 1px solid var(--line); border-radius: 22px;
+  background: var(--panel); box-shadow: 0 16px 38px #183d3020, 0 2px 6px #183d3010;
+}
+.well-grid { position: absolute; left: 0; right: 0; bottom: 0; top: calc(100% / (var(--n) + 1)); background: var(--well); border-radius: 0 13px 13px 13px; }
+.well-slot {
+  position: absolute; left: 0; top: 0; width: calc(100% / var(--n)); height: calc(100% / (var(--n) + 1) + 1px);
+  background: var(--well); border-radius: 13px 13px 0 0;
+}
+.well-slot::after { content: ""; position: absolute; inset: 7px; border: 2px dashed var(--line); border-radius: 9px; }
+.frame { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
+.frame path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.band-stats {
+  position: absolute; top: 0; left: calc(100% / var(--n)); right: calc(100% / var(--n)); height: calc(100% / (var(--n) + 1));
+  display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: 4px 18px; padding: 0 6px; pointer-events: none;
+}
+.stat { display: grid; text-align: center; line-height: 1.1; }
+.stat b { font: 800 1.1rem var(--mono); font-size: clamp(.95rem, 5.2cqw, 1.35rem); font-variant-numeric: tabular-nums; }
+.stat small { font-size: .58rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.thumb {
+  position: absolute; right: 0; top: 0; height: calc(100% / (var(--n) + 1) - 6px); aspect-ratio: 1; min-height: 44px; padding: 0; overflow: hidden;
+  border: 3px solid var(--panel); outline: 1px solid var(--line); border-radius: 13px; cursor: pointer;
+  background: var(--well) center / cover no-repeat; box-shadow: 0 4px 12px #102d2426; transition: transform .15s ease;
+}
+.thumb:active { transform: scale(.95); }
+.thumb-badge {
+  position: absolute; left: 3px; bottom: 3px; padding: 2px 5px; border-radius: 6px; background: rgba(0,0,0,.62); color: #fff;
+  font-size: .56rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; line-height: 1.3;
+}
+.grid { position: absolute; inset: 0; pointer-events: none; }
+.tile {
+  position: absolute; left: 0; top: 0; border: 0; padding: 0; background: none; cursor: pointer;
+  width: calc(100% / var(--n)); height: calc(100% / (var(--n) + 1));
+  transform: translate(calc(var(--c) * 100%), calc((var(--r) + 1) * 100%));
+  transition: transform 130ms ease-out; pointer-events: auto; touch-action: none;
+}
+.face {
+  position: absolute; inset: 2px; border-radius: 8px; background-color: var(--well); background-repeat: no-repeat;
+  box-shadow: 0 2px 8px #0e2c2426; transition: inset 300ms ease, border-radius 300ms ease;
+}
+.tile:active .face { filter: brightness(.92); }
+.tile.nope .face { animation: nope 260ms ease; }
+@keyframes nope { 20% { translate: -4px 0; } 45% { translate: 4px 0; } 70% { translate: -2px 0; } 100% { translate: 0 0; } }
+.num {
+  position: absolute; left: 6px; top: 5px; font-family: var(--mono); font-size: clamp(10px, 2.6vw, 14px);
+  color: #fff; background: rgba(0,0,0,.55); padding: 1px 6px; border-radius: 5px; pointer-events: none;
+}
+.hide-nums .num { display: none; }
+.board.solved .face { inset: 0; border-radius: 0; box-shadow: none; }
+.board.solved .num { display: none; }
+.peek {
+  position: absolute; left: 0; right: 0; bottom: 0; top: calc(100% / (var(--n) + 1)); z-index: 2; pointer-events: none;
+  border-radius: 0 13px 13px 13px; background: center / cover no-repeat; opacity: 0; transition: opacity .18s ease;
+}
+.board.peeking .peek { opacity: 1; }
+
+/* Status line and action bar */
+.hint { grid-area: hint; margin: 0; min-height: 1.45em; text-align: center; font-size: .88rem; line-height: 1.45; color: var(--muted); }
+.hint.win { color: var(--win); font-weight: 800; }
+.actions { grid-area: actions; display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 10px; padding-top: 4px; }
+.action {
+  min-height: 60px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 6px;
+  border: 1px solid var(--line); border-radius: 18px; background: var(--panel); font-size: .8rem; font-weight: 750; cursor: pointer;
+  box-shadow: 0 4px 12px #17352e0d; transition: transform .12s ease, background .15s ease; touch-action: manipulation;
+}
+.action:active { transform: scale(.95); }
+.action.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent); }
+.action[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+.icon-btn:focus-visible, .action:focus-visible, .thumb:focus-visible, .btn:focus-visible, .seg button:focus-visible,
+.gallery-card:focus-visible, .chip:focus-visible, .switch-row:focus-visible, .photo-btn:focus-visible, dialog button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.tile:focus-visible { outline: none; }
+.tile:focus-visible .face { box-shadow: 0 0 0 3px var(--accent); }
+
+/* Dialogs: bottom sheets on phones, centered cards on wider screens */
+dialog {
+  width: min(92vw, 420px); max-width: none; max-height: min(88dvh, 760px); overflow: auto; overscroll-behavior: contain;
+  padding: 0 20px 20px; border: 1px solid var(--line); border-radius: 22px; color: var(--fg); background: var(--bg);
+  box-shadow: 0 24px 80px #081c1650;
+}
+dialog::backdrop { background: rgb(6 14 11 / .6); }
+dialog[open] { animation: pop-in .2s ease-out; }
+dialog.sheet {
+  margin: auto 0 0; width: 100%; max-height: 90dvh; border-bottom: 0; border-radius: 24px 24px 0 0;
+  padding: 0 max(18px, env(safe-area-inset-right, 0px)) max(20px, env(safe-area-inset-bottom, 0px)) max(18px, env(safe-area-inset-left, 0px));
+}
+dialog.sheet[open] { animation: sheet-in .28s cubic-bezier(.2,.8,.2,1); }
+@keyframes sheet-in { from { transform: translateY(100%); } }
+@keyframes pop-in { from { transform: scale(.94); opacity: 0; } }
+.dialog-head {
+  position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 18px 0 12px; background: var(--bg);
+}
+.sheet .dialog-head { padding-top: 22px; }
+.sheet .dialog-head::before { content: ""; position: absolute; left: 50%; top: 8px; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line); }
+.dialog-head h2 { margin: 0; font-family: var(--display); font-size: 1.3rem; letter-spacing: -.02em; }
+.close-btn {
+  flex: 0 0 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 50%;
+  background: var(--well); color: var(--fg); cursor: pointer;
+}
+.close-btn svg.i { width: 18px; height: 18px; }
+@media (min-width: 640px) {
+  dialog.sheet { margin: auto; width: min(92vw, 560px); border-bottom: 1px solid var(--line); border-radius: 22px; padding: 0 22px 22px; }
+  dialog.sheet[open] { animation: pop-in .2s ease-out; }
+  .sheet .dialog-head { padding-top: 18px; }
+  .sheet .dialog-head::before { display: none; }
+}
+
+/* Settings */
+.section-label { margin: 6px 4px 8px; font-size: .7rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.list { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); overflow: hidden; margin-bottom: 16px; }
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 58px; padding: 10px 16px;
+  border: 0; background: none; text-align: left; font-weight: 650; cursor: pointer;
+}
+.switch-row + .switch-row { border-top: 1px solid var(--line); }
+.switch-row small { display: block; margin-top: 2px; font-size: .78rem; font-weight: 400; color: var(--muted); }
+.switch { position: relative; flex: 0 0 48px; height: 28px; border-radius: 999px; background: var(--line); transition: background .2s ease; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0004; transition: transform .2s ease; }
+[aria-checked="true"] .switch { background: var(--accent); }
+[aria-checked="true"] .switch::after { transform: translateX(20px); }
+.seg { display: flex; gap: 3px; padding: 3px; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.seg button { flex: 1; min-width: 0; min-height: 42px; padding: 0 2px; border: 0; border-radius: 9px; background: none; font: 700 .85rem var(--mono); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.seg.words button { font-family: var(--body); font-size: .9rem; }
+.note { margin: 0; font-size: .82rem; line-height: 1.45; color: var(--muted); }
+
+/* Gallery */
+.photo-btn {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 60px; margin-bottom: 14px; padding: 10px 14px; text-align: left;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 16px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel)); font-weight: 750; cursor: pointer;
+}
+.photo-btn svg.i { color: var(--accent); }
+.photo-btn small { display: block; margin-top: 1px; font-size: .76rem; font-weight: 400; color: var(--muted); }
+.gallery-collections { display: grid; gap: 14px; margin: 0 -20px 14px; }
+.collection-group { min-width: 0; }
+.collection-heading { margin: 0 20px 7px; color: var(--muted); font-size: .68rem; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+.gallery-categories { display: flex; gap: 8px; overflow-x: auto; padding: 2px 20px 4px; scrollbar-width: none; }
+.gallery-categories::-webkit-scrollbar { display: none; }
+.chip { flex: none; min-height: 38px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-size: .86rem; font-weight: 650; cursor: pointer; }
+.chip[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.gallery-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (min-width: 480px) { .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.gallery-card {
+  position: relative; padding: 0; overflow: hidden; text-align: left; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); box-shadow: 0 3px 10px #17352e0b; cursor: pointer; transition: transform .15s ease;
+}
+.gallery-card:active { transform: scale(.97); }
+.gallery-card[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.gallery-card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--well); }
+.gallery-card .tier {
+  position: absolute; left: 7px; top: 7px; padding: 3px 7px; border-radius: 7px; background: rgba(0,0,0,.62); color: #fff;
+  font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+}
+.gallery-card .name {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  padding: 8px 10px 10px; font-size: .84rem; font-weight: 700; line-height: 1.25;
+}
+.gallery-card:disabled { cursor: not-allowed; }
+.gallery-card:disabled img { filter: grayscale(.7) blur(3px) brightness(.75); }
+.gallery-card .lock {
+  position: absolute; left: 0; right: 0; top: 0; aspect-ratio: 1; display: grid; place-content: center; justify-items: center; gap: 4px;
+  padding: 10px; color: #fff; font-size: .74rem; font-weight: 700; text-align: center; text-shadow: 0 1px 4px #000a;
+}
+.gallery-credit { margin: 14px 0 0; font-size: .8rem; color: var(--muted); }
+
+/* Preview, win and confirm */
+.preview-dialog { width: min(94vw, 720px); }
+.preview-image { display: block; width: 100%; max-height: 74dvh; object-fit: contain; border-radius: 12px; background: var(--well); }
+.win-dialog { width: min(90vw, 380px); text-align: center; padding-top: 22px; }
+.win-img { width: 150px; aspect-ratio: 1; margin: 0 auto 14px; border-radius: 20px; background: var(--well) center / cover; box-shadow: 0 10px 28px #0e2c2440; }
+.win-dialog h2 { margin: 0; font-family: var(--display); font-size: 1.7rem; letter-spacing: -.02em; }
+.win-sub { margin: 4px 0 0; color: var(--muted); font-size: .9rem; }
+.win-stats { display: flex; justify-content: center; gap: 10px; margin: 16px 0 4px; }
+.win-stats div { display: grid; min-width: 88px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.win-stats b { font: 800 1.25rem var(--mono); font-variant-numeric: tabular-nums; }
+.win-stats small { font-size: .6rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.unlock { margin: 12px 0 0; padding: 8px 12px; border-radius: 12px; font-weight: 750; font-size: .9rem; color: var(--win); background: color-mix(in srgb, var(--win) 12%, transparent); }
+.dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+.btn {
+  min-height: 50px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
+  font-weight: 750; font-size: .95rem; cursor: pointer; transition: transform .12s ease;
+}
+.btn:active { transform: scale(.97); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 25%, transparent); }
+#confirmMessage { margin: 0; color: var(--muted); line-height: 1.45; }
+
+/* Short phones */
+@media (max-height: 680px) and (orientation: portrait) {
+  .app { gap: 2px; padding-top: max(6px, env(safe-area-inset-top, 0px)); padding-bottom: max(8px, env(safe-area-inset-bottom, 0px)); }
+  .topbar { min-height: 46px; }
+  .brand-mark { flex-basis: 36px; height: 36px; border-radius: 11px; }
+  .icon-btn { flex-basis: 42px; height: 42px; }
+  .action { min-height: 52px; border-radius: 16px; }
+  .stage { padding-block: 12px; }
+}
+/* Landscape phones: board left, controls right */
+@media (orientation: landscape) and (max-height: 560px) {
+  .app {
+    max-width: 980px; column-gap: 18px; row-gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(230px, 300px); grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas: "stage top" "stage hint" "stage actions";
+  }
+  .hint { align-self: center; }
+  .stage { padding: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile, .face, .peek, dialog[open], dialog.sheet[open] { transition: none; animation: none; }
+  .tile.nope .face { animation: none; }
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 4h4v4M4 20 20 4M20 16v4h-4M15 15l5 5M4 4l5 5"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+</svg>
+
+<div class="app">
+  <header class="topbar">
+    <span class="brand-mark" aria-hidden="true">✦</span>
+    <div class="title-block">
+      <h1 class="sr-only">Fixme</h1>
+      <p class="image-title" id="imageTitle">Sunny Windowsill Cat and Garden</p>
+      <span class="level-chip" id="levelChip">Beginner · 3×3</span>
+    </div>
+    <button class="icon-btn" id="menu" type="button" aria-label="Open settings" aria-haspopup="dialog"><svg class="i"><use href="#i-sliders"/></svg></button>
+  </header>
+
+  <main class="stage">
+    <div class="board" id="board" role="group" aria-label="Sliding puzzle board">
+      <div class="well-grid"></div>
+      <div class="well-slot" title="Spare slot"></div>
+      <div class="band-stats" aria-label="Puzzle statistics">
+        <div class="stat"><b id="moves">0</b><small>Moves</small></div>
+        <div class="stat"><b id="time">0:00</b><small>Time</small></div>
+      </div>
+      <button class="thumb" id="thumb" type="button" aria-label="Enlarge the completed picture" aria-haspopup="dialog" aria-controls="previewDialog"><span class="thumb-badge">Goal</span></button>
+      <div class="grid hide-nums" id="grid" role="group" aria-label="Puzzle pieces"></div>
+      <div class="peek" id="peek" aria-hidden="true"></div>
+      <svg class="frame" id="frame" aria-hidden="true"><path id="framePath"></path></svg>
+    </div>
+  </main>
+
+  <p class="hint" id="banner" role="status" aria-live="polite"></p>
+
+  <nav class="actions" aria-label="Game actions">
+    <button class="action" type="button" id="choosePicture" aria-haspopup="dialog"><svg class="i"><use href="#i-image"/></svg>Pictures</button>
+    <button class="action primary" type="button" id="shuffle"><svg class="i"><use href="#i-shuffle"/></svg><span id="shuffleLabel">Shuffle</span></button>
+    <button class="action" type="button" id="peekBtn" aria-pressed="false" aria-label="Peek at the picture (hold)"><svg class="i"><use href="#i-eye"/></svg>Peek</button>
+  </nav>
+
+  <dialog id="settingsDialog" class="sheet" aria-labelledby="settingsTitle">
+    <div class="dialog-head"><h2 id="settingsTitle">Settings</h2><button class="close-btn" type="button" data-close="settingsDialog" aria-label="Close settings"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <div id="sizeSettings" hidden>
+      <div class="section-label" id="sizeLabel">Photo grid size</div>
+      <div class="seg" id="sizes" role="group" aria-labelledby="sizeLabel">
+        <button type="button" data-n="3" aria-pressed="true">3×3</button>
+        <button type="button" data-n="4" aria-pressed="false">4×4</button>
+        <button type="button" data-n="5" aria-pressed="false">5×5</button>
+        <button type="button" data-n="6" aria-pressed="false">6×6</button>
+      </div>
+    </div>
+    <div class="section-label" id="themeLabel">Appearance</div>
+    <div class="seg words" id="themes" role="group" aria-labelledby="themeLabel">
+      <button type="button" data-mode="system" aria-pressed="true">System</button>
+      <button type="button" data-mode="light" aria-pressed="false">Light</button>
+      <button type="button" data-mode="dark" aria-pressed="false">Dark</button>
+    </div>
+    <div class="section-label">Play</div>
+    <div class="list">
+      <button class="switch-row" type="button" id="nums" role="switch" aria-checked="false"><span>Show numbers<small>Label each piece with its home position</small></span><span class="switch" aria-hidden="true"></span></button>
+      <button class="switch-row" type="button" id="sound" role="switch" aria-checked="true"><span>Sound effects</span><span class="switch" aria-hidden="true"></span></button>
+      <button class="switch-row" type="button" id="haptics" role="switch" aria-checked="true"><span>Vibration<small>Light buzz on moves, where supported</small></span><span class="switch" aria-hidden="true"></span></button>
+    </div>
+    <p class="note">Progress is saved on this device. Built-in pictures set their own grid size; your photos can use any size.</p>
+  </dialog>
+
+  <dialog id="galleryDialog" class="sheet" aria-labelledby="galleryTitle">
+    <div class="dialog-head"><h2 id="galleryTitle">Choose a picture</h2><button class="close-btn" type="button" data-close="galleryDialog" aria-label="Close picture gallery"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <button class="photo-btn" type="button" id="usePhoto"><svg class="i"><use href="#i-camera"/></svg><span>Use my own photo<small>Stays on this device, never uploaded</small></span></button>
+    <input type="file" id="file" accept="image/*">
+    <div class="gallery-collections" id="galleryCategories" aria-label="Picture collections"></div>
+    <div class="gallery-grid" id="galleryGrid"></div>
+    <p class="gallery-credit">Solve a puzzle to unlock the next level in every category. Pictures work offline.</p>
+  </dialog>
+
+  <dialog id="previewDialog" class="preview-dialog" aria-labelledby="previewTitle">
+    <div class="dialog-head"><h2 id="previewTitle">Goal picture</h2><button class="close-btn" type="button" data-close="previewDialog" aria-label="Close picture preview"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <img class="preview-image" id="previewImage" alt="The completed puzzle picture">
+  </dialog>
+
+  <dialog id="winDialog" class="win-dialog" aria-labelledby="winTitle">
+    <div class="win-img" id="winImg" aria-hidden="true"></div>
+    <h2 id="winTitle">Solved!</h2>
+    <p class="win-sub" id="winSub">Beginner complete</p>
+    <div class="win-stats"><div><b id="winMoves">0</b><small>Moves</small></div><div><b id="winTime">0:00</b><small>Time</small></div></div>
+    <p class="unlock" id="winUnlock" hidden></p>
+    <div class="dialog-actions"><button class="btn" type="button" id="playAgain">Play again</button><button class="btn primary" type="button" id="nextPicture">Next picture</button></div>
+  </dialog>
+
+  <dialog id="confirmDialog" aria-labelledby="confirmTitle">
+    <div class="dialog-head"><h2 id="confirmTitle">Start a new puzzle?</h2></div>
+    <p id="confirmMessage">Your current progress will be lost.</p>
+    <div class="dialog-actions"><button class="btn" type="button" id="cancelAction">Keep playing</button><button class="btn primary" type="button" id="confirmAction">Start new</button></div>
+  </dialog>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const grid = $('grid'), board = $('board'), thumb = $('thumb');
+  let N = 3, cells = [], tiles = [], imgURL = '', imageId = 'Animals-0', imageLabel = 'Sunny Windowsill Cat and Garden', imageTier = 0, unlockedTier = 0, moves = 0, startedAt = 0, elapsedBefore = 0, timerId = 0, solved = false, pendingAction = null, needsFreshPuzzle = false, soundEnabled = true, hapticsEnabled = true, audioContext = null, justUnlocked = false, themeMode = 'system';
+  // cells[0..N*N-1] = grid positions; cells[N*N] = spare slot (row -1, column 0). Value = tile id, -1 = empty.
+  const SPARE = () => N * N;
+  const coord = p => p === SPARE() ? { r: -1, c: 0 } : { r: Math.floor(p / N), c: p % N };
+  const at = (r, c) => {
+    if (c < 0 || c >= N || r >= N) return null;
+    if (r === -1) return c === 0 ? SPARE() : null;
+    if (r < -1) return null;
+    return r * N + c;
+  };
+
+  const catalog = {
+    Animals: [
+      ['Sunny Windowsill Cat and Garden', 'sunny-windowsill-cat-and-garden.webp'],
+      ['Whimsical Fox in a Sunlit Forest', 'whimsical-fox-in-a-sunlit-forest.webp'],
+      ['Tropical Reef Adventure', 'tropical-reef-adventure.webp']
+    ],
+    Food: [
+      ['Sunny Kitchen Fruit Bowl', 'sunny-kitchen-fruit-bowl.webp'],
+      ['Whimsical Sunlit Bakery Café', 'whimsical-sunlit-bakery-cafe.webp'],
+      ['Colourful European Farmers’ Market Stall', 'colourful-european-farmers-market-stall.webp']
+    ],
+    Space: [
+      ['Whimsical Earth, Moon and Stars', 'whimsical-earth-moon-and-stars.webp'],
+      ['Chibi Astronaut on the Moon', 'chibi-astronaut-on-the-moon.webp'],
+      ['Vibrant Alien Waterfall Valley', 'vibrant-alien-waterfall-valley.webp']
+    ],
+    Architecture: [
+      ['Sunny Countryside Cottage Garden', 'sunny-countryside-cottage-garden.webp'],
+      ['Sunny Mediterranean Café Street', 'sunny-mediterranean-cafe-street.webp'],
+      ['Sunlit Mediterranean Market Square', 'sunlit-mediterranean-market-square.webp']
+    ],
+    Nature: [
+      ['Sunflower in a Sunny Garden', 'sunflower-in-a-sunny-garden.webp'],
+      ['Enchanting Cottage Garden by the Lake', 'enchanting-cottage-garden-by-the-lake.webp'],
+      ['Tropical Waterfall Paradise with Colourful Birds', 'tropical-waterfall-paradise-with-colourful-birds.webp']
+    ],
+    Transportation: [
+      ['Red Bicycle in a Sunny Village Garden', 'red-bicycle-in-a-sunny-village-garden.webp'],
+      ['Steam Train Over the Mountain Bridge', 'steam-train-over-the-mountain-bridge.webp'],
+      ['Bustling Mediterranean Harbor Town', 'bustling-mediterranean-harbor-town.webp']
+    ],
+    Fantasy: [
+      ['Cheerful Dragon in a Mountain Meadow', 'cheerful-dragon-in-a-mountain-meadow.webp'],
+      ['Enchanted Alchemist’s Mountain Workshop', 'enchanted-alchemist-s-mountain-workshop.webp'],
+      ['Dragonlit Castle Courtyard', 'dragonlit-castle-courtyard.webp']
+    ],
+    'Animal Adventures': [
+      ['Whimsical Fox Meadow Fairytale', 'Whimsical Fox Meadow Fairytale.webp'],
+      ['Whimsical Woodland Picnic with a Hidden Wolf', 'Whimsical Woodland Picnic with a Hidden Wolf.webp'],
+      ['Woodland Lantern Concert', 'Woodland Lantern Concert.webp']
+    ],
+    'Cozy Kitchens': [
+      ['Pancakes and Birds by the Cottage Window', 'Pancakes and Birds by the Cottage Window.webp'],
+      ['Enchanted Bakery and Tiny Cobblers', 'Enchanted Bakery and Tiny Cobblers.webp'],
+      ['Wholesome Mouse Chefs’ Cottage Kitchen', 'Wholesome Mouse Chefs’ Cottage Kitchen.webp']
+    ],
+    'Space Stories': [
+      ['Chibi Moon Friends Under Earthlight', 'Chibi Moon Friends Under Earthlight.webp'],
+      ['Curious Robot in an Alien Valley', 'Curious Robot in an Alien Valley.webp'],
+      ['Stardust Garden Observatory at Night', 'Stardust Garden Observatory at Night.webp']
+    ],
+    'Storybook Places': [
+      ['Whimsical Rapunzel Cottage by the Lake', 'Whimsical Rapunzel Cottage by the Lake.webp'],
+      ['Sunny Storybook Village Street', 'Sunny Storybook Village Street.webp'],
+      ['Twilight Fairytale Village Square', 'Twilight Fairytale Village Square.webp']
+    ],
+    'Gardens & Nature': [
+      ['Golden Goose Through the Sunflower Garden', 'Golden Goose Through the Sunflower Garden.webp'],
+      ['Enchanted Garden Princess Reflections', 'Enchanted Garden Princess Reflections.webp'],
+      ['Enchanted Waterfall Forest Valley', 'Enchanted Waterfall Forest Valley.webp']
+    ],
+    'Journeys & Vehicles': [
+      ['Cheerful Bicycle Ride Through the Countryside', 'Cheerful Bicycle Ride Through the Countryside.webp'],
+      ['Whimsical Valley Steam Train', 'Whimsical Valley Steam Train.webp'],
+      ['Golden Fish at the Storybook Harbour', 'Golden Fish at the Storybook Harbour.webp']
+    ],
+    'Fantasy Worlds': [
+      ['Baby Dragon and Golden Bird Adventure', 'Baby Dragon and Golden Bird Adventure.webp'],
+      ['The Alchemist’s Cozy Starlit Workshop', 'The Alchemist’s Cozy Starlit Workshop.webp'],
+      ['Sunlit Castle Courtyard with Sleeping Princess and Dragons', 'Sunlit Castle Courtyard with Sleeping Princess and Dragons.webp']
+    ]
+  };
+  const categories = Object.keys(catalog);
+  const collections = [
+    { label: 'Original Collection', categories: ['Animals', 'Food', 'Space', 'Architecture', 'Nature', 'Transportation', 'Fantasy'] },
+    { label: 'Fairy-Tale Collection', categories: ['Animal Adventures', 'Cozy Kitchens', 'Space Stories', 'Storybook Places', 'Gardens & Nature', 'Journeys & Vehicles', 'Fantasy Worlds'] }
+  ];
+  const levels = [{ label: 'Beginner' }, { label: 'Intermediate' }, { label: 'Advanced' }];
+  const tierGridSizes = [3, 4, 6];
+  const catalogPath = item => `./images/${encodeURIComponent(item[1])}`;
+  function getCatalogImage(id) {
+    for (const [category, items] of Object.entries(catalog)) {
+      const found = items.findIndex((item, i) => `${category}-${i}` === id);
+      if (found >= 0) return catalogPath(items[found]);
+    }
+    return catalogPath(catalog.Animals[0]);
+  }
+  function getCatalogLabel(id) {
+    for (const [category, items] of Object.entries(catalog)) {
+      const found = items.findIndex((item, i) => `${category}-${i}` === id);
+      if (found >= 0) return items[found][0];
+    }
+    return catalog.Animals[0][0];
+  }
+  const currentCategory = () => imageId === 'custom' ? categories[0] : imageId.split('-')[0];
+  function updateSizeButtons() {
+    $('sizes').querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', String(+button.dataset.n === N)));
+  }
+  function updateSizeSettings() { $('sizeSettings').hidden = imageId !== 'custom'; }
+  function updateSwitches() {
+    $('sound').setAttribute('aria-checked', String(soundEnabled));
+    $('haptics').setAttribute('aria-checked', String(hapticsEnabled));
+  }
+  // System follows the device (CSS media query); Light and Dark pin the theme via data-theme.
+  function applyTheme() {
+    const root = document.documentElement;
+    if (themeMode === 'system') delete root.dataset.theme; else root.dataset.theme = themeMode;
+    $('themes').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === themeMode)));
+    const bg = { light: '#F2F6F2', dark: '#0F1714' };
+    document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
+      meta.content = themeMode === 'system' ? bg[meta.media.includes('dark') ? 'dark' : 'light'] : bg[themeMode];
+    });
+  }
+  function updateLevelChip() {
+    $('levelChip').textContent = `${imageId === 'custom' ? 'Your photo' : levels[imageTier].label} · ${N}×${N}`;
+  }
+  function buzz(pattern) {
+    if (hapticsEnabled && navigator.vibrate) try { navigator.vibrate(pattern); } catch { /* Vibration is optional. */ }
+  }
+  function playTone(frequency, delay = 0, duration = 0.09, volume = 0.035, type = 'sine') {
+    if (!soundEnabled) return;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      audioContext ||= new AudioContextClass();
+      if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+      const start = audioContext.currentTime + delay, oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
+      oscillator.type = type; oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(gain); gain.connect(audioContext.destination);
+      oscillator.start(start); oscillator.stop(start + duration + 0.015);
+    } catch { /* Audio is optional; keep the puzzle playable if the browser blocks it. */ }
+  }
+  function playMoveSound() { playTone([440, 523.25, 493.88, 587.33][moves % 4], 0, 0.055, 0.018, 'triangle'); }
+  function playCompleteSound() {
+    [523.25, 659.25, 783.99, 1046.5].forEach((frequency, i) => playTone(frequency, i * 0.105, 0.2, 0.04));
+  }
+
+  function selectPicture(name, i) {
+    imageId = `${name}-${i}`; imageLabel = catalog[name][i][0]; imageTier = i; N = tierGridSizes[i]; imgURL = catalogPath(catalog[name][i]);
+    updateSizeButtons(); updateSizeSettings(); newGame();
+  }
+  let activeCategory = categories[0];
+  function buildGallery() {
+    const collectionList = $('galleryCategories'), gallery = $('galleryGrid');
+    collectionList.innerHTML = ''; gallery.innerHTML = '';
+    const showCategory = name => {
+      activeCategory = name; collectionList.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.category === name)));
+      gallery.innerHTML = '';
+      catalog[name].forEach((item, i) => {
+        const [label] = item, card = document.createElement('button');
+        card.type = 'button'; card.className = 'gallery-card';
+        const locked = i > unlockedTier;
+        card.disabled = locked;
+        if (imageId === `${name}-${i}`) card.setAttribute('aria-current', 'true');
+        card.setAttribute('aria-label', locked ? `${label}, ${levels[i].label}, locked. Solve a ${levels[i - 1].label} puzzle to unlock.` : `${label}, ${levels[i].label}, ${tierGridSizes[i]} by ${tierGridSizes[i]}`);
+        const preview = document.createElement('img'); preview.src = catalogPath(item); preview.alt = ''; preview.loading = 'lazy';
+        const tier = document.createElement('span'); tier.className = 'tier'; tier.textContent = `${levels[i].label} · ${tierGridSizes[i]}×${tierGridSizes[i]}`;
+        const caption = document.createElement('span'); caption.className = 'name'; caption.textContent = label;
+        card.append(preview, tier, caption);
+        if (locked) {
+          const lock = document.createElement('span'); lock.className = 'lock';
+          lock.innerHTML = '<svg class="i"><use href="#i-lock"/></svg>';
+          lock.append(`Solve ${levels[i - 1].label} to unlock`); card.append(lock);
+        }
+        card.addEventListener('click', () => requestNewGame(() => { selectPicture(name, i); $('galleryDialog').close(); }));
+        gallery.append(card);
+      });
+    };
+    collections.forEach(collection => {
+      const section = document.createElement('section'); section.className = 'collection-group';
+      const heading = document.createElement('h3'); heading.className = 'collection-heading'; heading.textContent = collection.label;
+      const row = document.createElement('div'); row.className = 'gallery-categories'; row.setAttribute('role', 'group'); row.setAttribute('aria-label', collection.label + ' categories');
+      collection.categories.forEach(name => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'chip'; button.textContent = name;
+        button.dataset.category = name; button.setAttribute('aria-pressed', 'false');
+        button.addEventListener('click', () => { showCategory(name); button.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' }); });
+        row.append(button);
+      });
+      section.append(heading, row); collectionList.append(section);
+    });
+    showCategory(activeCategory);
+  }
+
+  function elapsedMs() { return elapsedBefore + (startedAt ? Date.now() - startedAt : 0); }
+  function saveGame() {
+    try {
+      localStorage.setItem('fixme-save-v1', JSON.stringify({ N, cells, moves, elapsed: elapsedMs(), solved, imageId, imageLabel, imageTier, unlockedTier, customImage: imageId === 'custom' ? imgURL : '', showNumbers: $('nums').getAttribute('aria-checked') === 'true', soundEnabled, hapticsEnabled, themeMode }));
+    } catch { /* Storage can be unavailable or full; keep the current game playable. */ }
+  }
+  function restoreGame() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('fixme-save-v1') || 'null');
+      if (!saved || ![3,4,5,6].includes(saved.N) || !Array.isArray(saved.cells) || saved.cells.length !== saved.N * saved.N + 1) return false;
+      const vals = [...saved.cells].sort((a,b) => a-b);
+      if (vals[0] !== -1 || vals.slice(1).some((v,i) => v !== i)) return false;
+      N = saved.N; cells = saved.cells; moves = Math.max(0, saved.moves || 0); elapsedBefore = Math.max(0, saved.elapsed || 0); solved = Boolean(saved.solved);
+      imageId = saved.imageId || 'Animals-0'; imageTier = Math.max(0, Math.min(2, Number(saved.imageTier) || 0)); unlockedTier = Math.max(0, Math.min(2, Number(saved.unlockedTier) || 0));
+      soundEnabled = saved.soundEnabled !== false; hapticsEnabled = saved.hapticsEnabled !== false;
+      if (imageId !== 'custom' && N !== tierGridSizes[imageTier]) {
+        N = tierGridSizes[imageTier]; cells = Array.from({ length: N * N + 1 }, (_, i) => i < N * N ? i : -1);
+        moves = 0; elapsedBefore = 0; solved = false; needsFreshPuzzle = true;
+      }
+      imgURL = imageId === 'custom' && saved.customImage ? saved.customImage : getCatalogImage(imageId);
+      imageLabel = imageId === 'custom' ? (saved.imageLabel || 'Your photo') : getCatalogLabel(imageId);
+      if (imageId !== 'custom') activeCategory = currentCategory();
+      updateSizeButtons(); updateSizeSettings();
+      $('nums').setAttribute('aria-checked', String(Boolean(saved.showNumbers)));
+      grid.classList.toggle('hide-nums', !saved.showNumbers);
+      startedAt = moves && !solved ? Date.now() : 0;
+      return true;
+    } catch { return false; }
+  }
+
+  async function loadFile(file) {
+    let src;
+    try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+    catch {
+      src = await new Promise((res, rej) => {
+        const im = new Image(); im.onload = () => res(im); im.onerror = rej;
+        im.src = URL.createObjectURL(file);
+      });
+    }
+    const w = src.width, h = src.height, side = Math.min(w, h), out = Math.min(side, 768);
+    const cv = document.createElement('canvas'); cv.width = cv.height = out;
+    cv.getContext('2d').drawImage(src, (w - side) / 2, (h - side) / 2, side, side, 0, 0, out, out);
+    if (typeof src.close === 'function') src.close();
+    return cv.toDataURL('image/jpeg', .84);
+  }
+
+  // Outline around the spare slot + grid only (thumbnail excluded), matching the wells' rounded corners.
+  function drawFrame() {
+    const w = board.clientWidth, h = board.clientHeight; if (!w) return;
+    const cell = w / N, top = h / (N + 1), r = 12, o = 1.5;
+    const L = -o, T = -o, R = w + o, B = h + o, C = cell + o, Y = top - o;
+    $('framePath').setAttribute('d',
+      `M${L + r},${T} H${C - r} A${r},${r} 0 0 1 ${C},${T + r} V${Y} H${R - r} A${r},${r} 0 0 1 ${R},${Y + r} ` +
+      `V${B - r} A${r},${r} 0 0 1 ${R - r},${B} H${L + r} A${r},${r} 0 0 1 ${L},${B - r} V${T + r} A${r},${r} 0 0 1 ${L + r},${T} Z`);
+  }
+  new ResizeObserver(drawFrame).observe(board);
+
+  function build() {
+    board.style.setProperty('--n', N);
+    requestAnimationFrame(drawFrame);
+    grid.innerHTML = ''; tiles = [];
+    for (let i = 0; i < N * N; i++) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'tile';
+      b.setAttribute('aria-label', `Piece ${i + 1}, home position row ${Math.floor(i / N) + 1}, column ${i % N + 1}`);
+      const f = document.createElement('span'); f.className = 'face';
+      f.style.backgroundImage = `url("${imgURL}")`;
+      f.style.backgroundSize = `${N * 100}% ${N * 100}%`;
+      f.style.backgroundPosition = `${(i % N) / (N - 1) * 100}% ${Math.floor(i / N) / (N - 1) * 100}%`;
+      const n = document.createElement('span'); n.className = 'num'; n.textContent = i + 1;
+      b.append(f, n);
+      b.addEventListener('click', () => { if (performance.now() > suppressClickUntil) tap(cells.indexOf(i)); });
+      b.addEventListener('animationend', () => b.classList.remove('nope'));
+      grid.append(b); tiles.push(b);
+    }
+    thumb.style.backgroundImage = `url("${imgURL}")`;
+    $('peek').style.backgroundImage = `url("${imgURL}")`;
+    $('previewImage').src = imgURL;
+    $('imageTitle').textContent = imageLabel;
+    updateLevelChip();
+  }
+
+  function updateHint() {
+    const hint = $('banner');
+    hint.classList.toggle('win', solved);
+    if (solved) hint.textContent = `Solved in ${moves} moves · ${formatTime(elapsedBefore)}`;
+    else if (!moves) hint.textContent = 'Tap or swipe a piece next to the empty space';
+    else hint.textContent = '';
+    $('shuffleLabel').textContent = solved ? 'New game' : 'Shuffle';
+  }
+
+  function render() {
+    cells.forEach((t, p) => {
+      if (t < 0) return;
+      const { r, c } = coord(p);
+      tiles[t].style.setProperty('--c', c);
+      tiles[t].style.setProperty('--r', r);
+      const home = coord(t), current = p === SPARE() ? 'in the spare slot' : `row ${r + 1}, column ${c + 1}`;
+      tiles[t].setAttribute('aria-label', `Piece ${t + 1}, ${current}; home row ${home.r + 1}, column ${home.c + 1}`);
+    });
+    $('moves').textContent = moves;
+    $('time').textContent = formatTime(elapsedMs());
+    grid.setAttribute('aria-label', `Puzzle pieces, ${N} by ${N}, ${moves} moves`);
+    updateHint();
+  }
+
+  const gap = () => cells.indexOf(-1);
+
+  // Slide every piece between the tapped position and the empty space, if they share a row or column.
+  function slide(p) {
+    const g = gap(); if (p === g) return false;
+    const a = coord(g), b = coord(p);
+    if (a.r !== b.r && a.c !== b.c) return false;
+    const dr = Math.sign(b.r - a.r), dc = Math.sign(b.c - a.c);
+    let cur = a;
+    while (cur.r !== b.r || cur.c !== b.c) {
+      const nxt = { r: cur.r + dr, c: cur.c + dc };
+      const from = at(nxt.r, nxt.c), to = at(cur.r, cur.c);
+      if (from === null || to === null) return false;
+      cur = nxt;
+    }
+    cur = a;
+    while (cur.r !== b.r || cur.c !== b.c) {
+      const nxt = { r: cur.r + dr, c: cur.c + dc };
+      cells[at(cur.r, cur.c)] = cells[at(nxt.r, nxt.c)];
+      cur = nxt;
+    }
+    cells[p] = -1;
+    return true;
+  }
+
+  function reject(p) {
+    const tile = tiles[cells[p]]; if (!tile) return;
+    tile.classList.remove('nope'); void tile.offsetWidth; tile.classList.add('nope');
+    buzz(25);
+  }
+
+  function tap(p) {
+    if (solved) return;
+    if (!slide(p)) { reject(p); return; }
+    moves++;
+    if (!startedAt) { startedAt = Date.now(); timerId = setInterval(tick, 250); }
+    buzz(8);
+    render(); check(); saveGame();
+  }
+
+  // Swipe a piece toward the empty space; a tap still works through the click handler.
+  let swipe = null, suppressClickUntil = 0;
+  grid.addEventListener('pointerdown', e => {
+    const tile = e.target.closest('.tile'); if (!tile) return;
+    swipe = { x: e.clientX, y: e.clientY, id: tiles.indexOf(tile) };
+    try { tile.setPointerCapture(e.pointerId); } catch { /* Capture is a nicety. */ }
+  });
+  grid.addEventListener('pointercancel', () => { swipe = null; });
+  grid.addEventListener('pointerup', e => {
+    if (!swipe) return;
+    const s = swipe, dx = e.clientX - s.x, dy = e.clientY - s.y; swipe = null;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 16) return;
+    suppressClickUntil = performance.now() + 400;
+    const p = cells.indexOf(s.id), from = coord(p), to = coord(gap());
+    const ok = Math.abs(dx) > Math.abs(dy)
+      ? from.r === to.r && Math.sign(dx) === Math.sign(to.c - from.c)
+      : from.c === to.c && Math.sign(dy) === Math.sign(to.r - from.r);
+    if (ok) tap(p); else if (!solved) reject(p);
+  });
+
+  function formatTime(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  function tick() { $('time').textContent = formatTime(elapsedMs()); if (Date.now() % 5000 < 300) saveGame(); }
+
+  const isSolved = () => cells[SPARE()] === -1 && cells.slice(0, N * N).every((t, i) => t === i);
+
+  function check() {
+    if (!isSolved()) { playMoveSound(); return; }
+    solved = true; elapsedBefore = elapsedMs(); startedAt = 0; clearInterval(timerId); timerId = 0;
+    playCompleteSound(); buzz([30, 60, 30, 60, 80]);
+    board.classList.add('solved');
+    justUnlocked = imageId !== 'custom' && imageTier === unlockedTier && unlockedTier < levels.length - 1;
+    if (justUnlocked) { unlockedTier++; buildGallery(); }
+    updateHint(); saveGame();
+    setTimeout(showWin, 650);
+  }
+
+  function nextTarget() {
+    if (justUnlocked) return [currentCategory(), unlockedTier];
+    if (imageId === 'custom') return [categories[0], unlockedTier];
+    return [categories[(categories.indexOf(currentCategory()) + 1) % categories.length], Math.min(imageTier, unlockedTier)];
+  }
+  function showWin() {
+    if (!solved || document.querySelector('dialog[open]')) return;
+    $('winImg').style.backgroundImage = `url("${imgURL}")`;
+    $('winSub').textContent = imageId === 'custom' ? 'Photo puzzle complete' : `${levels[imageTier].label} complete`;
+    $('winMoves').textContent = moves; $('winTime').textContent = formatTime(elapsedBefore);
+    $('winUnlock').hidden = !justUnlocked;
+    if (justUnlocked) $('winUnlock').textContent = `🔓 ${levels[unlockedTier].label} pictures unlocked!`;
+    $('nextPicture').textContent = justUnlocked ? 'Next level' : 'Next picture';
+    $('winDialog').showModal();
+  }
+
+  function neighbors(p) {
+    const { r, c } = coord(p);
+    return [[r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]].map(([y, x]) => at(y, x)).filter(v => v !== null);
+  }
+
+  // Shuffle with legal moves from the finished picture, so every puzzle can be completed.
+  function shuffle() {
+    cells = Array.from({ length: N * N + 1 }, (_, i) => i < N * N ? i : -1);
+    let prev = -1;
+    do {
+      for (let k = 0; k < N * N * 30; k++) {
+        const g = gap(), opts = neighbors(g).filter(o => o !== prev);
+        prev = g; slide(opts[Math.floor(Math.random() * opts.length)]);
+      }
+    } while (isSolved() || cells[SPARE()] === -1 && cells.slice(0, N * N).filter((t, i) => t === i).length > N * N / 2);
+    moves = 0; elapsedBefore = 0; startedAt = 0; solved = false; justUnlocked = false; clearInterval(timerId); timerId = 0;
+    $('time').textContent = '0:00';
+    board.classList.remove('solved');
+    render(); saveGame();
+  }
+
+  function newGame() { build(); shuffle(); }
+  function hasProgress() { return moves > 0 && !solved; }
+  function requestNewGame(action) {
+    if (!hasProgress()) { action(); return; }
+    pendingAction = action;
+    $('confirmDialog').showModal();
+  }
+
+  // Peek: hold to see the finished picture over the board.
+  const setPeek = on => { board.classList.toggle('peeking', on); $('peekBtn').setAttribute('aria-pressed', String(on)); };
+  $('peekBtn').addEventListener('pointerdown', e => { e.preventDefault(); setPeek(true); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => $('peekBtn').addEventListener(type, () => setPeek(false)));
+  $('peekBtn').addEventListener('click', e => { if (e.detail === 0) setPeek(!board.classList.contains('peeking')); });
+  $('peekBtn').addEventListener('contextmenu', e => e.preventDefault());
+
+  $('sizes').addEventListener('click', e => {
+    const b = e.target.closest('button[data-n]'); if (!b) return;
+    const nextN = +b.dataset.n;
+    requestNewGame(() => { N = nextN; updateSizeButtons(); newGame(); });
+  });
+  $('shuffle').addEventListener('click', () => requestNewGame(shuffle));
+  $('nums').addEventListener('click', e => {
+    const on = e.currentTarget.getAttribute('aria-checked') !== 'true';
+    e.currentTarget.setAttribute('aria-checked', on);
+    grid.classList.toggle('hide-nums', !on);
+    saveGame();
+  });
+  $('themes').addEventListener('click', e => {
+    const b = e.target.closest('button[data-mode]'); if (!b) return;
+    themeMode = b.dataset.mode; applyTheme(); saveGame();
+  });
+  $('sound').addEventListener('click', () => { soundEnabled = !soundEnabled; updateSwitches(); saveGame(); });
+  $('haptics').addEventListener('click', () => { hapticsEnabled = !hapticsEnabled; updateSwitches(); buzz(15); saveGame(); });
+  thumb.addEventListener('click', () => $('previewDialog').showModal());
+  $('file').addEventListener('change', async e => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    try {
+      const nextImage = await loadFile(f);
+      const photoLabel = (f.name.replace(/\.[^.]+$/, '') || 'Your photo').slice(0, 60);
+      requestNewGame(() => { imgURL = nextImage; imageId = 'custom'; imageLabel = photoLabel; updateSizeSettings(); newGame(); $('galleryDialog').close(); });
+    }
+    catch { $('banner').textContent = "That file couldn't be read as an image. Try a JPG or PNG."; }
+    e.target.value = '';
+  });
+  document.addEventListener('keydown', e => {
+    if (e.target.closest('dialog')) return;
+    const d = { ArrowUp: [1, 0], ArrowDown: [-1, 0], ArrowLeft: [0, 1], ArrowRight: [0, -1] }[e.key];
+    if (!d) return;
+    const { r, c } = coord(gap()), t = at(r + d[0], c + d[1]);
+    if (t === null) return;
+    e.preventDefault(); tap(t);
+  });
+
+  $('menu').addEventListener('click', () => $('settingsDialog').showModal());
+  $('usePhoto').addEventListener('click', () => $('file').click());
+  $('choosePicture').addEventListener('click', () => {
+    buildGallery(); $('galleryDialog').showModal();
+    const active = $('galleryCategories').querySelector('[aria-pressed="true"]');
+    if (active) active.scrollIntoView({ block: 'nearest', inline: 'center' });
+  });
+  $('playAgain').addEventListener('click', () => { $('winDialog').close(); shuffle(); });
+  $('nextPicture').addEventListener('click', () => { const [name, i] = nextTarget(); $('winDialog').close(); activeCategory = name; selectPicture(name, i); });
+  $('confirmAction').addEventListener('click', () => { const action = pendingAction; pendingAction = null; $('confirmDialog').close(); if (action) action(); });
+  $('cancelAction').addEventListener('click', () => { pendingAction = null; $('confirmDialog').close(); });
+  $('confirmDialog').addEventListener('cancel', e => { e.preventDefault(); pendingAction = null; $('confirmDialog').close(); });
+  document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => $(button.dataset.close).close()));
+  // Tapping the backdrop closes a dialog (except the confirmation, which needs an explicit answer).
+  document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', e => {
+    if (e.target !== dialog || dialog.id === 'confirmDialog') return;
+    const box = dialog.getBoundingClientRect();
+    if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) dialog.close();
+  }));
+  grid.classList.add('hide-nums');
+  try {
+    const savedMode = (JSON.parse(localStorage.getItem('fixme-save-v1') || 'null') || {}).themeMode;
+    if (['system', 'light', 'dark'].includes(savedMode)) themeMode = savedMode;
+  } catch { /* Keep following the device theme. */ }
+  applyTheme();
+  updateSwitches();
+  if (!restoreGame()) { imageId = 'Animals-0'; imageLabel = getCatalogLabel(imageId); imgURL = getCatalogImage(imageId); updateSizeSettings(); newGame(); }
+  else if (needsFreshPuzzle) newGame();
+  else { build(); if (solved) board.classList.add('solved'); render(); if (moves && !solved) timerId = setInterval(tick, 250); }
+  updateSwitches();
+  buildGallery();
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
+  window.addEventListener('pagehide', saveGame);
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+})();
+</script>
+</body>
+</html>
