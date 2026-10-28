@@ -12,8 +12,8 @@ signal privacy_changed  ## privacy_options_required changed.
 const TEST_BANNER := "ca-app-pub-3940256099942544/6300978111"
 const TEST_REWARDED := "ca-app-pub-3940256099942544/5224354917"
 # Your ad unit IDs from AdMob → Apps → TileTales → Ad units (they contain a "/"). Used in release exports.
-const BANNER_UNIT := ""
-const REWARDED_UNIT := ""
+const BANNER_UNIT := "ca-app-pub-7198171083469324/6221381613"  # TileTales Banner
+const REWARDED_UNIT := "ca-app-pub-7198171083469324/4785011015"  # TileTales Unlock Level
 
 const PREVIEW_BANNER_HEIGHT := 62.0  # A 50 dp banner at this game's scale.
 const RETRY_SECONDS := 30.0

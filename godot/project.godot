@@ -8,6 +8,11 @@
 
 config_version=5
 
+[admob]
+
+general/android/enabled=true
+general/android/app_id="ca-app-pub-7198171083469324~7063689999"
+
 [application]
 
 config/name="TileTales - Slide Your Time Away"

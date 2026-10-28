@@ -47,8 +47,11 @@ A Godot 4.7 port of the web game in `www/`, with the same layout and behaviour. 
    **Download** and **Install**. Enable it in **Project → Project Settings → Plugins**.
 4. **Android build template:** **Project → Install Android Build Template**. If the plugin's Android library didn't
    download, use **Project → Tools → AdMob Manager → Android → Download & Install**.
-5. **App ID:** **Project → Project Settings → General → Admob → General**: tick **Enabled** for Android and paste the App ID.
-6. **Ad unit IDs:** paste them into `BANNER_UNIT` and `REWARDED_UNIT` at the top of `scripts/ads.gd`.
+5. **App ID:** already set in `project.godot` (`admob/general/android/app_id`). After installing the plugin, check that
+   **Project → Project Settings → General → Admob → General** shows Android **Enabled** with
+   `ca-app-pub-7198171083469324~7063689999`.
+6. **Ad unit IDs:** already set in `scripts/ads.gd`: `BANNER_UNIT` (TileTales Banner) and `REWARDED_UNIT`
+   (TileTales Unlock Level).
 7. **Export preset:** **Project → Export → Add → Android**. Tick **Use Gradle Build**, set **Min SDK** to 24 or higher and
    **Target SDK** to 35 or higher, and enable the **Vibrate** permission.
 8. **Test:** export a debug build to a phone. You should see a "Test Ad" banner, and "or watch an ad" should play a test video.
