@@ -19,3 +19,8 @@ Pictures live in both `www/images/` and `godot/assets/images/`; keep them in syn
 ## Privacy
 
 Privacy policy: [TileTales-privacy-policy](https://github.com/albertcastaneto/TileTales-privacy-policy).
+
+## License
+
+Copyright © 2026 koidafish. All rights reserved. The code and the pictures are shared for viewing only and may not be
+copied, reused or redistributed without permission. See [LICENSE](LICENSE).
