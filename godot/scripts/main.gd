@@ -106,6 +106,8 @@ var image_label := ""
 var image_tier := 0
 var unlocked_tier := 0
 var unlocked_by_category: Dictionary = {}
+var best_times: Dictionary = {}  # Puzzle key → {"ms", "moves"}: the fastest solve and the fewest moves, tracked separately.
+var new_best := ""  # What the last solve beat, for the win screen: "time", "moves" or "".
 var just_unlocked := false
 var sound_enabled := true
 var haptics_enabled := true
@@ -158,6 +160,7 @@ var win_image: RoundedImage
 var win_sub: Label
 var win_moves: Label
 var win_time: Label
+var win_best: Label
 var win_unlock: PanelContainer
 var next_button: Button
 var photo_picker: FileDialog
@@ -184,6 +187,12 @@ func _ready() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(SAVE_PATH) == OK:
 		theme_mode = clampi(int(cfg.get_value("game", "theme", 0)), 0, THEME_MODES.size() - 1)
+		var saved_bests: Variant = cfg.get_value("game", "best_times", {})
+		if saved_bests is Dictionary:
+			for key in saved_bests:
+				var best: Variant = saved_bests[key]
+				if best is Dictionary and int(best.get("ms", 0)) > 0 and int(best.get("moves", 0)) > 0:
+					best_times[str(key)] = {"ms": int(best.ms), "moves": int(best.moves)}
 	_apply_palette()
 	var t := Theme.new()
 	t.default_font = Palette.font(400)
@@ -438,9 +447,33 @@ func _on_solved() -> void:
 	if just_unlocked:
 		unlocked_tier = category_unlock + 1
 		unlocked_by_category[category] = unlocked_tier
+	_record_best()
 	_render()
 	_save()
 	get_tree().create_timer(0.65).timeout.connect(_show_win)
+
+## Keeps the fastest time and the fewest moves for the solved puzzle, each on its own.
+func _record_best() -> void:
+	new_best = ""
+	if board.move_count <= 0 or elapsed_before <= 0:
+		return
+	var key := _best_key(image_id, n)
+	var best: Dictionary = best_times.get(key, {})
+	if best.is_empty():
+		best_times[key] = {"ms": elapsed_before, "moves": board.move_count}
+		new_best = "first"  # Nothing to beat yet, and the best is this very solve.
+		return
+	if elapsed_before < int(best.ms):
+		best.ms = elapsed_before
+		new_best = "time"
+	if board.move_count < int(best.moves):
+		best.moves = board.move_count
+		if new_best.is_empty():
+			new_best = "moves"
+
+## Your own photo gets a separate record per grid size.
+func _best_key(id: String, grid: int) -> String:
+	return "%s-%dx%d" % [id, grid, grid]
 
 func _next_target() -> Array:
 	var categories := CATALOG.keys()
@@ -458,6 +491,21 @@ func _show_win() -> void:
 	win_sub.text = "Photo puzzle complete" if image_id == "custom" else "%s complete" % LEVELS[image_tier]
 	win_moves.text = str(board.move_count)
 	win_time.text = _format_time(elapsed_before)
+	var best: Dictionary = best_times.get(_best_key(image_id, n), {})
+	win_best.visible = not best.is_empty() and new_best != "first"
+	if new_best == "time":
+		win_best.text = "New best time!"
+	elif new_best == "moves":
+		win_best.text = "New fewest moves!"
+	elif not best.is_empty():
+		win_best.text = "Best %s · %d moves" % [_format_time(int(best.ms)), int(best.moves)]
+	var beaten := new_best in ["time", "moves"]
+	win_best.add_theme_color_override("font_color", Palette.c.win if beaten else Palette.c.muted)
+	win_best.add_theme_font_override("font", Palette.font(800 if beaten else 600))
+	if beaten:
+		win_best.pivot_offset = win_best.size / 2.0
+		win_best.scale = Vector2(0.6, 0.6)
+		create_tween().tween_property(win_best, "scale", Vector2.ONE, 0.35).set_delay(0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	win_unlock.visible = just_unlocked
 	if just_unlocked:
 		(win_unlock.get_child(0) as Label).text = "%s pictures unlocked!" % LEVELS[unlocked_tier]
@@ -468,6 +516,8 @@ func _render() -> void:
 	image_title.text = image_label
 	level_chip.text = ("%s · %d×%d" % ["Your photo" if image_id == "custom" else LEVELS[image_tier], n, n]).to_upper()
 	board.time_text = _format_time(_elapsed_ms())
+	var best: Dictionary = best_times.get(_best_key(image_id, n), {})
+	board.best_text = "" if best.is_empty() else _format_time(int(best.ms))
 	board.queue_redraw()
 	var solved: bool = board.is_solved
 	hint.add_theme_color_override("font_color", Palette.c.win if solved else Palette.c.muted)
@@ -510,6 +560,7 @@ func _save() -> void:
 	cfg.set_value("game", "image_label", image_label)
 	cfg.set_value("game", "image_tier", image_tier)
 	cfg.set_value("game", "unlocked_by_category", unlocked_by_category)
+	cfg.set_value("game", "best_times", best_times)
 	cfg.set_value("game", "show_numbers", board.show_numbers)
 	cfg.set_value("game", "sound", sound_enabled)
 	cfg.set_value("game", "haptics", haptics_enabled)
@@ -745,6 +796,10 @@ func _on_photo_selected(path: String) -> void:
 	var label := "" if path.begins_with("content://") else path.get_file().get_basename().left(60)
 	_request_photo_puzzle(func():
 		img.save_png(PHOTO_PATH)
+		# A new photo is a new puzzle, so the old photo's records no longer apply.
+		for key in best_times.keys():
+			if str(key).begins_with("custom-"):
+				best_times.erase(key)
 		image_id = "custom"
 		image_label = label if not label.is_empty() else "Your photo"
 		n = photo_grid_size
@@ -1291,6 +1346,20 @@ func _gallery_card(category: String, index: int) -> Button:
 	caption.max_lines_visible = 2
 	caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	card.add_child(caption)
+	var best: Dictionary = {} if locked else best_times.get(_best_key("%s-%d" % [category, index], TIER_SIZES[index]), {})
+	var best_pill: PanelContainer
+	if not best.is_empty():
+		best_pill = _pill(Color(0, 0, 0, 0.62), 9, Vector2(8, 4))
+		best_pill.mouse_filter = MOUSE_FILTER_IGNORE
+		var best_row := HBoxContainer.new()
+		best_row.add_theme_constant_override("separation", 4)
+		best_row.mouse_filter = MOUSE_FILTER_IGNORE
+		best_pill.add_child(best_row)
+		var clock := Icon.new("clock", 14, Color.WHITE)
+		clock.size_flags_vertical = SIZE_SHRINK_CENTER
+		best_row.add_child(clock)
+		best_row.add_child(_label(_format_time(int(best.ms)), 13, 800, Color.WHITE, true))
+		card.add_child(best_pill)
 	var lock: VBoxContainer
 	if locked:
 		lock = VBoxContainer.new()
@@ -1330,6 +1399,8 @@ func _gallery_card(category: String, index: int) -> Button:
 		if lock:
 			lock.position = Vector2(10, 0)
 			lock.size = Vector2(w - 20, w)
+		if best_pill:
+			best_pill.position = Vector2(w - 9, w - 9) - best_pill.get_combined_minimum_size()
 		if not is_equal_approx(card.custom_minimum_size.y, w + 66):
 			card.custom_minimum_size.y = w + 66)
 	_press_fx(card, 0.97)
@@ -1389,6 +1460,9 @@ func _build_win() -> void:
 		values.append(value)
 	win_moves = values[0]
 	win_time = values[1]
+	c.add_child(_spacer(12))
+	win_best = _centered(_label("", 16, 600, Palette.c.muted))
+	c.add_child(win_best)
 	win_unlock = _pill(Palette.mix(Palette.c.win, Palette.c.bg, 0.12), 15, Vector2(15, 10))
 	win_unlock.add_child(_centered(_label("", 17, 700, Palette.c.win)))
 	var unlock_wrap := VBoxContainer.new()
@@ -1888,6 +1962,10 @@ class Icon extends Control:
 				for i in pts.size():
 					pts[i] *= s
 				draw_colored_polygon(pts, color)
+			"clock":
+				_circle(Vector2(12, 13), 8)
+				_line([Vector2(12, 9), Vector2(12, 13), Vector2(15, 15)])
+				_line([Vector2(10, 3), Vector2(14, 3)])
 			"x":
 				_line([Vector2(6, 6), Vector2(18, 18)])
 				_line([Vector2(18, 6), Vector2(6, 18)])

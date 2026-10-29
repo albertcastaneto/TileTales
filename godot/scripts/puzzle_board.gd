@@ -26,6 +26,11 @@ var time_text := "0:00":
 		if value != time_text:
 			time_text = value
 			queue_redraw()
+var best_text := "":  ## This puzzle's best time, shown as a third stat; empty until it's been solved.
+	set(value):
+		if value != best_text:
+			best_text = value
+			queue_redraw()
 
 var _shown := {}  # tile id -> drawn position in cells (column, band row); animates toward _target.
 var _target := {}
@@ -332,24 +337,44 @@ func _draw_stats(area: Rect2, board_width: float) -> void:
 	var num_size := int(clampf(board_width * 0.06, 19.0, 27.0))
 	var label_size := 11
 	var stats := [[str(move_count), "MOVES"], [time_text, "TIME"]]
+	if not best_text.is_empty():
+		stats.append([best_text, "BEST"])  # A target to beat, drawn in the accent colour.
 	var widths := []
 	for s in stats:
 		widths.append(maxf(num_font.get_string_size(s[0], HORIZONTAL_ALIGNMENT_LEFT, -1, num_size).x,
 			label_font.get_string_size(s[1], HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x))
 	var stat_h := num_font.get_height(num_size) + label_font.get_height(label_size)
-	var side_by_side: bool = area.size.x - 12.0 >= widths[0] + widths[1] + 22.0
+	var gap := 22.0
+	var room := area.size.x - 12.0
+	var in_row := stats.size()
+	while in_row > 1 and _row_width(widths, in_row, gap) > room:
+		in_row -= 1
+	# Whatever doesn't fit across goes below: BEST as one small line, TIME as a second stacked stat.
+	var best_line := stats.size() == 3 and in_row < 3
+	var below := 0.0 if not best_line else label_font.get_height(label_size) + 6.0
+	var rows := 1 if in_row >= 2 else 2
+	var block_h := stat_h * rows + 5.0 * (rows - 1) + below
+	var top := area.get_center().y - block_h / 2.0
 	var centers := []
-	if side_by_side:
-		var total: float = widths[0] + widths[1] + 22.0
-		var left := area.get_center().x - total / 2.0
-		centers = [Vector2(left + widths[0] / 2.0, area.get_center().y - stat_h / 2.0),
-			Vector2(left + widths[0] + 22.0 + widths[1] / 2.0, area.get_center().y - stat_h / 2.0)]
+	if rows == 1:
+		var x := area.get_center().x - _row_width(widths, in_row, gap) / 2.0
+		for i in in_row:
+			centers.append(Vector2(x + widths[i] / 2.0, top))
+			x += widths[i] + gap
 	else:
-		var top := area.get_center().y - (stat_h * 2.0 + 5.0) / 2.0
 		centers = [Vector2(area.get_center().x, top), Vector2(area.get_center().x, top + stat_h + 5.0)]
-	for i in 2:
-		Palette.draw_text(self, stats[i][0], centers[i].x, centers[i].y, num_font, num_size, c.fg)
+	for i in centers.size():
+		var color: Color = c.accent if i == 2 else c.fg
+		Palette.draw_text(self, stats[i][0], centers[i].x, centers[i].y, num_font, num_size, color)
 		Palette.draw_text(self, stats[i][1], centers[i].x, centers[i].y + num_font.get_height(num_size), label_font, label_size, c.muted)
+	if best_line:
+		Palette.draw_text(self, "BEST " + best_text, area.get_center().x, top + block_h - below + 6.0, label_font, label_size, c.accent)
+
+func _row_width(widths: Array, count: int, gap: float) -> float:
+	var total := gap * (count - 1)
+	for i in count:
+		total += widths[i]
+	return total
 
 func _draw_thumb(rect: Rect2) -> void:
 	var c: Dictionary = Palette.c
