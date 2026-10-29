@@ -10,16 +10,17 @@ config_version=5
 
 [admob]
 
-general/android/enabled=true
 general/android/app_id="ca-app-pub-7198171083469324~7063689999"
 
 [application]
 
 config/name="TileTales - Slide Your Time Away"
 run/main_scene="res://scenes/main.tscn"
-config/features=PackedStringArray("4.7")
-config/icon="res://icon.webp"
 config/quit_on_go_back=false
+config/features=PackedStringArray("4.7")
+boot_splash/bg_color=Color(0.031373, 0.184314, 0.207843, 1)
+boot_splash/show_image=false
+config/icon="res://icon.webp"
 
 [display]
 
@@ -31,8 +32,13 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/handheld/orientation=1
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/admob/plugin.cfg")
+
 [rendering]
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-environment/defaults/default_clear_color=Color(0.94902, 0.964706, 0.94902, 1)
+textures/vram_compression/import_etc2_astc=true
+environment/defaults/default_clear_color=Color(0.031373, 0.184314, 0.207843, 1)

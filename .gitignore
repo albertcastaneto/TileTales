@@ -7,6 +7,7 @@ godot/android/
 *.aab
 *.keystore
 *.jks
+*.hprof
 
 # Web / Capacitor
 node_modules/

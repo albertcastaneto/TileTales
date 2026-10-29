@@ -3,19 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cv1wjgdjm4cjy"
-path="res://.godot/imported/Chibi Moon Friends Under Earthlight.webp-7a4333fc20786610bf2c0944cc51f8ed.ctex"
+path.s3tc="res://.godot/imported/Chibi Moon Friends Under Earthlight.webp-7a4333fc20786610bf2c0944cc51f8ed.s3tc.ctex"
+path.etc2="res://.godot/imported/Chibi Moon Friends Under Earthlight.webp-7a4333fc20786610bf2c0944cc51f8ed.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/images/Chibi Moon Friends Under Earthlight.webp"
-dest_files=["res://.godot/imported/Chibi Moon Friends Under Earthlight.webp-7a4333fc20786610bf2c0944cc51f8ed.ctex"]
+dest_files=["res://.godot/imported/Chibi Moon Friends Under Earthlight.webp-7a4333fc20786610bf2c0944cc51f8ed.s3tc.ctex", "res://.godot/imported/Chibi Moon Friends Under Earthlight.webp-7a4333fc20786610bf2c0944cc51f8ed.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -23,7 +25,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=true
+mipmaps/generate=false
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

@@ -10,6 +10,7 @@ const Ads = preload("res://scripts/ads.gd")
 const SAVE_PATH := "user://tiletales_save.cfg"
 const PHOTO_PATH := "user://custom_photo.png"
 const IMAGE_DIR := "res://assets/images/"
+const PRIVACY_POLICY_URL := "https://tiletales-privacy-policy.vercel.app/"
 const LEVELS := ["Beginner", "Intermediate", "Advanced"]
 const TIER_SIZES := [3, 4, 6]
 const THEME_MODES := ["System", "Light", "Dark"]
@@ -104,6 +105,7 @@ var image_id := "Animals-0"
 var image_label := ""
 var image_tier := 0
 var unlocked_tier := 0
+var unlocked_by_category: Dictionary = {}
 var just_unlocked := false
 var sound_enabled := true
 var haptics_enabled := true
@@ -112,6 +114,9 @@ var system_dark := false
 var elapsed_before := 0
 var started_at := 0
 var running := false
+const BANNER_IDLE_SECONDS := 8.0
+var _banner_idle_seconds := 0.0
+var _puzzle_banner_visible := false
 var pending_action := Callable()
 var active_category := "Animals"
 var texture: Texture2D
@@ -134,12 +139,15 @@ var shuffle_label: Label
 var peek_button: Button
 var margin: MarginContainer
 var settings: Overlay
+var tips: Overlay
 var gallery: Overlay
 var preview: Overlay
 var win: Overlay
 var confirm: Overlay
 var size_section: Control
 var size_buttons := {}
+var tips_buttons := {}
+var tips_body: VBoxContainer
 var theme_buttons := {}
 var switches := {}
 var chip_buttons := {}
@@ -155,6 +163,13 @@ var photo_picker: FileDialog
 var locked_material: ShaderMaterial
 var stack: Array[Overlay] = []
 var save_timer := 0.0
+var photo_grid_size := 3
+var confirm_message: Label
+var confirm_cancel_button: Button
+var confirm_start_button: Button
+var photo_grid_selector: Control
+var photo_grid_buttons := {}
+var launch_splash: Control
 
 # Sound
 var move_sounds: Array[AudioStreamWAV] = []
@@ -163,6 +178,8 @@ var players: Array[AudioStreamPlayer] = []
 var next_player := 0
 
 func _ready() -> void:
+	# Controls and the board read mouse events; Godot turns touches into them for us.
+	Input.set_emulate_mouse_from_touch(true)
 	var cfg := ConfigFile.new()
 	if cfg.load(SAVE_PATH) == OK:
 		theme_mode = clampi(int(cfg.get_value("game", "theme", 0)), 0, THEME_MODES.size() - 1)
@@ -171,6 +188,8 @@ func _ready() -> void:
 	t.default_font = Palette.font(400)
 	t.default_font_size = 18
 	theme = t
+	launch_splash = _build_launch_splash()
+	await get_tree().process_frame
 	locked_material = ShaderMaterial.new()
 	locked_material.shader = Shader.new()
 	locked_material.shader.code = LOCKED_SHADER
@@ -183,10 +202,90 @@ func _ready() -> void:
 	_build_ui()
 	get_viewport().size_changed.connect(_apply_safe_area)
 	_apply_safe_area()
+	ads.set_banner_visible(false)
 	if not _restore():
 		_select_picture("Animals", 0)
 	_update_switches()
 	ads.start()
+	# The splash is drawn above the game while it fades, so release touch input as soon as
+	# the controls exist. This also prevents an interrupted fade from leaving a transparent
+	# full-screen Control that swallows every tap on Android.
+	if is_instance_valid(launch_splash):
+		launch_splash.mouse_filter = MOUSE_FILTER_IGNORE
+	await get_tree().create_timer(0.65).timeout
+	if is_instance_valid(launch_splash):
+		var fade := create_tween()
+		fade.tween_property(launch_splash, "modulate:a", 0.0, 0.3)
+		await fade.finished
+		launch_splash.queue_free()
+
+func _build_launch_splash() -> Control:
+	var splash := Control.new()
+	splash.name = "LaunchSplash"
+	splash.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	splash.z_index = 100
+	splash.mouse_filter = MOUSE_FILTER_STOP
+	add_child(splash)
+	var background := ColorRect.new()
+	background.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	background.color = Color("#082F35")
+	background.mouse_filter = MOUSE_FILTER_IGNORE
+	splash.add_child(background)
+	var wash := TextureRect.new()
+	var gradient := GradientTexture2D.new()
+	gradient.gradient = Gradient.new()
+	gradient.gradient.set_color(0, Color("#16A98C", 0.32))
+	gradient.gradient.set_color(1, Color("#082F35", 0.0))
+	gradient.fill = GradientTexture2D.FILL_RADIAL
+	gradient.fill_from = Vector2(0.5, 0.42)
+	gradient.fill_to = Vector2(0.5, 1.0)
+	wash.texture = gradient
+	wash.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	wash.mouse_filter = MOUSE_FILTER_IGNORE
+	splash.add_child(wash)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	center.mouse_filter = MOUSE_FILTER_IGNORE
+	splash.add_child(center)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 14)
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.mouse_filter = MOUSE_FILTER_IGNORE
+	center.add_child(column)
+	var logo := TextureRect.new()
+	logo.texture = load("res://assets/app-icons/tiletales-adaptive-foreground.png")
+	var logo_side := minf(340.0, get_viewport_rect().size.x * 0.76)
+	logo.custom_minimum_size = Vector2(logo_side, logo_side)
+	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	logo.mouse_filter = MOUSE_FILTER_IGNORE
+	column.add_child(logo)
+	var subtitle := Label.new()
+	subtitle.text = "Slide Your Time Away"
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_font_override("font", Palette.font(700))
+	subtitle.add_theme_font_size_override("font_size", 20)
+	subtitle.add_theme_color_override("font_color", Color("#F3F7E8"))
+	subtitle.mouse_filter = MOUSE_FILTER_IGNORE
+	column.add_child(subtitle)
+	var dots := HBoxContainer.new()
+	dots.alignment = BoxContainer.ALIGNMENT_CENTER
+	dots.add_theme_constant_override("separation", 9)
+	dots.custom_minimum_size.y = 18
+	dots.mouse_filter = MOUSE_FILTER_IGNORE
+	column.add_child(dots)
+	for i in 3:
+		var dot := Panel.new()
+		dot.custom_minimum_size = Vector2(10, 10)
+		dot.add_theme_stylebox_override("panel", Palette.box(Color("#53D5B5"), 6))
+		dot.mouse_filter = MOUSE_FILTER_IGNORE
+		dots.add_child(dot)
+		# Bound to the dot so the endless loop dies with the splash; a looping tween left
+		# without a target spins forever in release builds and freezes the game.
+		var pulse := dot.create_tween().set_loops()
+		pulse.tween_property(dot, "modulate:a", 0.28, 0.3).set_delay(i * 0.12)
+		pulse.tween_property(dot, "modulate:a", 1.0, 0.3)
+	return splash
 
 # --- Theme: System follows the device; Light and Dark are fixed ---
 
@@ -209,7 +308,7 @@ func _rebuild_ui(keep_settings_open: bool = false) -> void:
 	_save()
 	_apply_palette()
 	stack.clear()
-	ads.set_banner_visible(true)
+	_reset_banner_idle()
 	switches.clear()
 	size_buttons.clear()
 	theme_buttons.clear()
@@ -233,7 +332,11 @@ func _select_picture(category: String, index: int) -> void:
 	image_tier = index
 	n = TIER_SIZES[index]
 	active_category = category
+	unlocked_tier = _category_unlock(category)
 	_new_game()
+
+func _category_unlock(category: String) -> int:
+	return clampi(int(unlocked_by_category.get(category, 0)), 0, LEVELS.size() - 1)
 
 func _new_game() -> void:
 	texture = _load_texture()
@@ -292,13 +395,28 @@ func _has_progress() -> bool:
 	return board.move_count > 0 and not board.is_solved
 
 func _request_new_game(action: Callable) -> void:
+	photo_grid_selector.visible = false
+	confirm_message.text = "Your current progress will be lost."
+	confirm_cancel_button.text = "Keep playing"
+	confirm_start_button.text = "Start new"
 	if not _has_progress():
 		action.call()
 		return
 	pending_action = action
 	_open(confirm)
 
+func _request_photo_puzzle(action: Callable) -> void:
+	photo_grid_size = n if image_id == "custom" else 3
+	_update_seg(photo_grid_buttons, photo_grid_size)
+	photo_grid_selector.visible = true
+	confirm_message.text = "Choose a grid size for your photo." + (" Your current progress will be lost." if _has_progress() else "")
+	confirm_cancel_button.text = "Keep playing" if _has_progress() else "Cancel"
+	confirm_start_button.text = "Start puzzle"
+	pending_action = action
+	_open(confirm)
+
 func _on_moved() -> void:
+	_note_puzzle_activity()
 	if not running and not board.is_solved:
 		running = true
 		started_at = Time.get_ticks_msec()
@@ -313,9 +431,12 @@ func _on_solved() -> void:
 	running = false
 	_play(complete_sound)
 	_buzz(120)
-	just_unlocked = image_id != "custom" and image_tier == unlocked_tier and unlocked_tier < LEVELS.size() - 1
+	var category := _current_category()
+	var category_unlock := _category_unlock(category)
+	just_unlocked = image_id != "custom" and image_tier == category_unlock and category_unlock < LEVELS.size() - 1
 	if just_unlocked:
-		unlocked_tier += 1
+		unlocked_tier = category_unlock + 1
+		unlocked_by_category[category] = unlocked_tier
 	_render()
 	_save()
 	get_tree().create_timer(0.65).timeout.connect(_show_win)
@@ -325,8 +446,9 @@ func _next_target() -> Array:
 	if just_unlocked:
 		return [_current_category(), unlocked_tier]
 	if image_id == "custom":
-		return [categories[0], unlocked_tier]
-	return [categories[(categories.find(_current_category()) + 1) % categories.size()], mini(image_tier, unlocked_tier)]
+		return [categories[0], _category_unlock(categories[0])]
+	var next_category: String = categories[(categories.find(_current_category()) + 1) % categories.size()]
+	return [next_category, mini(image_tier, _category_unlock(next_category))]
 
 func _show_win() -> void:
 	if not board.is_solved or not stack.is_empty():
@@ -358,6 +480,13 @@ func _render() -> void:
 	shuffle_label.text = "New game" if solved else "Shuffle"
 
 func _process(delta: float) -> void:
+	if running and not board.is_solved and stack.is_empty():
+		if not _puzzle_banner_visible:
+			_banner_idle_seconds += delta
+			if _banner_idle_seconds >= BANNER_IDLE_SECONDS:
+				_set_puzzle_banner_visible(true, true)
+	else:
+		_banner_idle_seconds = 0.0
 	if not running:
 		return
 	board.time_text = _format_time(_elapsed_ms())
@@ -379,7 +508,7 @@ func _save() -> void:
 	cfg.set_value("game", "image_id", image_id)
 	cfg.set_value("game", "image_label", image_label)
 	cfg.set_value("game", "image_tier", image_tier)
-	cfg.set_value("game", "unlocked_tier", unlocked_tier)
+	cfg.set_value("game", "unlocked_by_category", unlocked_by_category)
 	cfg.set_value("game", "show_numbers", board.show_numbers)
 	cfg.set_value("game", "sound", sound_enabled)
 	cfg.set_value("game", "haptics", haptics_enabled)
@@ -397,12 +526,22 @@ func _restore() -> bool:
 	n = saved_n
 	image_id = str(cfg.get_value("game", "image_id", "Animals-0"))
 	image_tier = clampi(int(cfg.get_value("game", "image_tier", 0)), 0, 2)
-	unlocked_tier = clampi(int(cfg.get_value("game", "unlocked_tier", 0)), 0, 2)
 	sound_enabled = bool(cfg.get_value("game", "sound", true))
 	haptics_enabled = bool(cfg.get_value("game", "haptics", true))
 	board.show_numbers = bool(cfg.get_value("game", "show_numbers", false))
 	if image_id != "custom" and _entry(image_id).is_empty():
 		return false
+	var saved_unlocks: Variant = cfg.get_value("game", "unlocked_by_category", {})
+	if cfg.has_section_key("game", "unlocked_by_category") and saved_unlocks is Dictionary:
+		for category in CATALOG:
+			unlocked_by_category[category] = clampi(int(saved_unlocks.get(category, 0)), 0, LEVELS.size() - 1)
+	else:
+		# Migrate old saves by keeping their earned tier in the category they were playing.
+		var old_tier := clampi(int(cfg.get_value("game", "unlocked_tier", 0)), 0, LEVELS.size() - 1)
+		var old_category: String = CATALOG.keys()[0] if image_id == "custom" else _current_category()
+		unlocked_by_category[old_category] = old_tier
+	active_category = CATALOG.keys()[0] if image_id == "custom" else _current_category()
+	unlocked_tier = _category_unlock(active_category)
 	image_label = str(cfg.get_value("game", "image_label", "Your photo")) if image_id == "custom" else _entry(image_id)[0]
 	if image_id != "custom":
 		active_category = _current_category()
@@ -437,8 +576,53 @@ func _notification(what: int) -> void:
 			if is_instance_valid(board):
 				_save()
 		NOTIFICATION_APPLICATION_FOCUS_IN:
+			_reset_banner_idle()
 			if theme_mode == 0 and is_instance_valid(ui_root) and _device_dark() != system_dark:
 				_rebuild_ui(settings in stack)
+
+## Any touch, click, drag or key press during play hides the idle banner. Never consumes input.
+func _input(event: InputEvent) -> void:
+	if not running or board.is_solved or not stack.is_empty():
+		return
+	if (event is InputEventScreenTouch and event.pressed) or event is InputEventScreenDrag:
+		_note_puzzle_activity()
+		return
+	var mouse_button := event as InputEventMouseButton
+	if mouse_button != null and mouse_button.button_index == MOUSE_BUTTON_LEFT and mouse_button.pressed:
+		_note_puzzle_activity()
+		return
+	var mouse_motion := event as InputEventMouseMotion
+	if mouse_motion != null and mouse_motion.button_mask & MOUSE_BUTTON_MASK_LEFT != 0:
+		_note_puzzle_activity()
+		return
+	var key := event as InputEventKey
+	if key != null and key.pressed and not key.echo:
+		_note_puzzle_activity()
+
+func _note_puzzle_activity() -> void:
+	_banner_idle_seconds = 0.0
+	if _puzzle_banner_visible:
+		_set_puzzle_banner_visible(false)
+
+func _reset_banner_idle() -> void:
+	_banner_idle_seconds = 0.0
+	_set_puzzle_banner_visible(false)
+
+func _set_puzzle_banner_visible(on: bool, animate: bool = false) -> void:
+	_puzzle_banner_visible = on
+	ads.set_banner_visible(on, animate)
+	if is_instance_valid(banner_slot):
+		if not ads.live and on and animate and ads.banner_height > 0.0:
+			banner_slot.visible = true
+			var bottom := _safe_bottom_margin()
+			banner_slot.offset_top = -bottom
+			banner_slot.offset_bottom = -bottom
+			var tween := create_tween()
+			tween.tween_property(banner_slot, "offset_top", -(bottom + ads.banner_height), 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			return
+		else:
+			banner_slot.visible = on and ads.banner_height > 0.0
+		_apply_safe_area()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel") and not stack.is_empty():
@@ -468,8 +652,8 @@ func _play(stream: AudioStream) -> void:
 	player.play()
 
 func _make_sounds() -> void:
-	for freq in [440.0, 523.25, 493.88, 587.33]:
-		move_sounds.append(_synth([[freq, 0.0, 0.055, 0.11, true]]))
+	for variant in 4:
+		move_sounds.append(_wood_click(variant))
 	var notes := []
 	for i in 4:
 		notes.append([[523.25, 659.25, 783.99, 1046.5][i], i * 0.105, 0.2, 0.2, false])
@@ -478,6 +662,31 @@ func _make_sounds() -> void:
 		var player := AudioStreamPlayer.new()
 		add_child(player)
 		players.append(player)
+
+## A quick wooden clack: a noisy attack with a short, low resonant body.
+func _wood_click(variant: int) -> AudioStreamWAV:
+	var rate := 22050
+	var duration := 0.085
+	var count := int(duration * rate)
+	var data := PackedByteArray()
+	data.resize(count * 2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7341 + variant * 997
+	var pitch := 1.0 + float(variant - 1) * 0.035
+	for i in count:
+		var t := float(i) / rate
+		var attack := exp(-t * 95.0)
+		var body := exp(-t * 42.0)
+		var click := rng.randf_range(-1.0, 1.0) * 0.28 * attack
+		var thunk := sin(TAU * 185.0 * pitch * t) * 0.48 * body
+		var knock := sin(TAU * 510.0 * pitch * t) * 0.2 * exp(-t * 68.0)
+		var sample := (click + thunk + knock) * 0.65
+		data.encode_s16(i * 2, int(clampf(sample, -1.0, 1.0) * 32767.0))
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = rate
+	wav.data = data
+	return wav
 
 ## Bakes short tones like the web's oscillators: [frequency, delay, duration, volume, triangle?].
 func _synth(notes: Array) -> AudioStreamWAV:
@@ -510,19 +719,34 @@ func _synth(notes: Array) -> AudioStreamWAV:
 # --- Photo picker ---
 
 func _on_photo_selected(path: String) -> void:
-	var img := Image.load_from_file(path)
-	if img == null or img.is_empty():
-		hint.text = "That file couldn't be read as an image. Try a JPG or PNG."
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if bytes.is_empty():
+		hint.text = "Couldn't open that photo. Please try another JPG or WebP image."
+		return
+	# The Android system picker returns a content:// URI. Read it through FileAccess,
+	# then decode the supported formats from memory instead of treating it as a path.
+	var img := Image.new()
+	var load_error := ERR_UNAVAILABLE
+	if bytes.size() >= 3 and bytes[0] == 0xFF and bytes[1] == 0xD8 and bytes[2] == 0xFF:
+		load_error = img.load_jpg_from_buffer(bytes)
+	elif bytes.size() >= 12 and bytes.slice(0, 4).get_string_from_ascii() == "RIFF" and bytes.slice(8, 12).get_string_from_ascii() == "WEBP":
+		load_error = img.load_webp_from_buffer(bytes)
+	else:
+		hint.text = "Please choose a JPG or WebP photo. PNG and other file types aren't supported."
+		return
+	if load_error != OK or img.is_empty():
+		hint.text = "That photo couldn't be decoded. Please try another JPG or WebP image."
 		return
 	var side := mini(img.get_width(), img.get_height())
 	img = img.get_region(Rect2i((img.get_width() - side) / 2, (img.get_height() - side) / 2, side, side))
 	if side > 768:
 		img.resize(768, 768, Image.INTERPOLATE_LANCZOS)
-	var label := path.get_file().get_basename().left(60)
-	_request_new_game(func():
+	var label := "" if path.begins_with("content://") else path.get_file().get_basename().left(60)
+	_request_photo_puzzle(func():
 		img.save_png(PHOTO_PATH)
 		image_id = "custom"
 		image_label = label if not label.is_empty() else "Your photo"
+		n = photo_grid_size
 		_new_game()
 		size_section.visible = true
 		_close(gallery))
@@ -632,6 +856,7 @@ func _build_ui() -> void:
 	peek_button.button_up.connect(_set_peek.bind(false))
 	actions.add_child(peek_button)
 
+	_build_tips()
 	_build_settings()
 	_build_gallery()
 	_build_preview()
@@ -644,7 +869,7 @@ func _build_ui() -> void:
 	photo_picker.access = FileDialog.ACCESS_FILESYSTEM
 	photo_picker.use_native_dialog = true
 	photo_picker.title = "Choose a photo"
-	photo_picker.filters = PackedStringArray(["*.png, *.jpg, *.jpeg, *.webp ; Images"])
+	photo_picker.filters = PackedStringArray(["*.jpg, *.jpeg, *.webp ; Photos ; image/jpeg,image/webp"])
 	photo_picker.file_selected.connect(_on_photo_selected)
 	ui_root.add_child(photo_picker)
 
@@ -671,10 +896,20 @@ func _apply_safe_area() -> void:
 	margin.add_theme_constant_override("margin_top", int(maxf(12.0, top)))
 	# The banner sits at the very bottom, with a clear gap above it so the action buttons aren't tapped by mistake.
 	var banner: float = ads.banner_height
-	banner_slot.visible = banner > 0.0
+	banner_slot.visible = banner > 0.0 and _puzzle_banner_visible
 	banner_slot.offset_top = -(bottom + banner)
 	banner_slot.offset_bottom = -bottom
+	# Keep the same reserved space while the banner is hidden so the board never jumps.
 	margin.add_theme_constant_override("margin_bottom", int(bottom + banner + 16.0) if banner > 0.0 else int(maxf(15.0, bottom)))
+
+func _safe_bottom_margin() -> float:
+	if not OS.has_feature("mobile"):
+		return 0.0
+	var safe := DisplayServer.get_display_safe_area()
+	var screen := DisplayServer.screen_get_size()
+	if screen.y <= 0:
+		return 0.0
+	return float(screen.y - safe.end.y) * get_viewport_rect().size.y / float(screen.y)
 
 func _build_settings() -> void:
 	settings = _make_overlay("Settings", true)
@@ -750,9 +985,114 @@ func _build_settings() -> void:
 	privacy.pressed.connect(ads.show_privacy_options)
 	privacy_row.add_child(privacy)
 	privacy_row.add_child(_spacer(20))
+	c.add_child(_section_label("Help & privacy"))
+	var tips_button := _settings_action_button("Puzzle tips & techniques")
+	tips_button.pressed.connect(func(): _open(tips))
+	c.add_child(tips_button)
+	c.add_child(_spacer(10))
+	var policy_button := _settings_action_button("Privacy policy")
+	policy_button.pressed.connect(_open_privacy_policy)
+	c.add_child(policy_button)
+	c.add_child(_spacer(20))
 	var note := _label("Progress is saved on this device. Built-in pictures set their own grid size; your photos can use any size.", 16, 400, Palette.c.muted)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	c.add_child(note)
+
+func _settings_action_button(title: String) -> Button:
+	var button := Button.new()
+	button.text = title
+	button.custom_minimum_size.y = 58
+	button.size_flags_horizontal = SIZE_EXPAND_FILL
+	button.add_theme_font_override("font", Palette.font(700))
+	button.add_theme_font_size_override("font_size", 17)
+	_style_button(button, Palette.box(Palette.c.panel, 16, Palette.c.line, 1))
+	_font_colors(button, Palette.c.fg)
+	_press_fx(button, 0.97)
+	return button
+
+func _open_privacy_policy() -> void:
+	var error := OS.shell_open(PRIVACY_POLICY_URL)
+	if error != OK:
+		push_warning("Could not open the TileTales privacy policy: %s" % error_string(error))
+
+func _build_tips() -> void:
+	tips = _make_overlay("Puzzle tips", true)
+	var c: VBoxContainer = tips.content
+	var intro := _label("Choose your grid size for a few practical solving techniques.", 15, 400, Palette.c.muted)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	c.add_child(intro)
+	c.add_child(_spacer(16))
+	var selector := _pill(Palette.c.panel, 15, Vector2(4, 4), Palette.c.line)
+	c.add_child(selector)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	selector.add_child(row)
+	tips_buttons.clear()
+	for size_n in [3, 4, 5, 6]:
+		var button := Button.new()
+		button.text = "%d×%d" % [size_n, size_n]
+		button.custom_minimum_size.y = 46
+		button.size_flags_horizontal = SIZE_EXPAND_FILL
+		button.add_theme_font_override("font", Palette.font(700, true))
+		button.add_theme_font_size_override("font_size", 15)
+		button.pressed.connect(_set_tips_size.bind(size_n))
+		row.add_child(button)
+		tips_buttons[size_n] = button
+	c.add_child(_spacer(16))
+	tips_body = VBoxContainer.new()
+	tips_body.add_theme_constant_override("separation", 10)
+	c.add_child(tips_body)
+	tips.on_open = func(): _set_tips_size(n)
+	_set_tips_size(n)
+
+func _set_tips_size(size_n: int) -> void:
+	_update_seg(tips_buttons, size_n)
+	for child in tips_body.get_children():
+		tips_body.remove_child(child)
+		child.queue_free()
+	var title := ""
+	var cards: Array = []
+	match size_n:
+		3:
+			title = "3×3 · Beginner"
+			cards = [
+				["Build a first row", "Use the empty slot to bring the tiles into place from one side. Check the whole line before moving: every tile between your piece and the gap shifts together."],
+				["Protect what you solve", "Once a row is complete, try not to move it again. Work through the remaining 2×3 area, then use short cycles to finish the last few tiles."],
+				["Use the picture", "Tap Goal or hold Peek to check the finished image. Look for a corner or a distinctive object, then plan a few moves toward it."]]
+		4:
+			title = "4×4 · Intermediate"
+			cards = [
+				["Solve in strips", "Complete the top row, then work down through the remaining rows. Keep solved rows out of your working area."],
+				["Place the last pair together", "Before finishing a row, arrange its final two tiles as a pair. Set up the gap so both can slide into their places without breaking the solved tiles."],
+				["Watch the whole line", "A move shifts every tile between the selected piece and the gap. Use the live preview to see where the entire line will land before releasing."]]
+		5:
+			title = "5×5 · Custom photo"
+			cards = [
+				["Shrink your workspace", "Solve one row at a time, then leave the solved area alone. This keeps the number of tiles you need to manage under control."],
+				["Keep pairs together", "For the last two tiles of a row, move them as a pair into position. Avoid placing one tile if it traps the other on the wrong side."],
+				["Use the spare slot", "The empty slot above the board is part of the puzzle. It can help route the gap around the upper-left corner when you need to reposition a line."]]
+		6:
+			title = "6×6 · Advanced"
+			cards = [
+				["Work in bands", "Complete a few rows, then focus on the remaining band. Keep a clear working area instead of moving tiles across the whole board."],
+				["Plan the final pairs", "The final two tiles of a row or column often need to be arranged together. Bring them near their targets first, then cycle the gap into place."],
+				["Use each move deliberately", "Check the live line preview and decide where its leading tile and the other shifted tiles will end up. The spare slot above the grid can help route the gap around the top-left corner."]]
+	var heading := _label(title, 19, 800, Palette.c.accent)
+	tips_body.add_child(heading)
+	for card_data in cards:
+		tips_body.add_child(_tip_card(card_data[0], card_data[1]))
+
+func _tip_card(title: String, detail: String) -> Control:
+	var card := _pill(Palette.c.panel, 18, Vector2(15, 13), Palette.c.line)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 5)
+	card.add_child(column)
+	column.add_child(_label(title, 16, 700))
+	var body := _label(detail, 14, 400, Palette.c.muted)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.size_flags_horizontal = SIZE_EXPAND_FILL
+	column.add_child(body)
+	return card
 
 func _switch_row(key: String, title: String, subtitle: String) -> Button:
 	var row := Button.new()
@@ -871,7 +1211,7 @@ func _build_gallery() -> void:
 	gallery_grid.add_theme_constant_override("v_separation", 14)
 	c.add_child(gallery_grid)
 	c.add_child(_spacer(18))
-	var credit := _label("Solve a puzzle to unlock the next level in every category. Pictures work offline.", 16, 400, Palette.c.muted)
+	var credit := _label("Solve puzzles to unlock the next level within each category. Pictures work offline.", 16, 400, Palette.c.muted)
 	credit.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	c.add_child(credit)
 
@@ -899,8 +1239,9 @@ func _show_category(category: String) -> void:
 
 func _gallery_card(category: String, index: int) -> Button:
 	var item: Array = CATALOG[category][index]
-	var locked := index > unlocked_tier
-	var can_watch := index == unlocked_tier + 1  # The next level can be unlocked now with a rewarded ad.
+	var category_unlock := _category_unlock(category)
+	var locked := index > category_unlock
+	var can_watch := index == category_unlock + 1  # The next level in this category can be unlocked with a rewarded ad.
 	var current := image_id == "%s-%d" % [category, index]
 	var card := Button.new()
 	card.size_flags_horizontal = SIZE_EXPAND_FILL
@@ -1045,20 +1386,47 @@ func _build_win() -> void:
 
 func _build_confirm() -> void:
 	confirm = _make_overlay("Start a new puzzle?", false, false, false, 420)
-	var message := _label("Your current progress will be lost.", 18, 400, Palette.c.muted)
-	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	confirm.content.add_child(message)
+	confirm_message = _label("Your current progress will be lost.", 18, 400, Palette.c.muted)
+	confirm_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	confirm.content.add_child(confirm_message)
+	photo_grid_selector = VBoxContainer.new()
+	photo_grid_selector.add_theme_constant_override("separation", 0)
+	photo_grid_selector.visible = false
+	photo_grid_selector.add_child(_section_label("Photo grid size"))
+	var grid_pill := _pill(Palette.c.panel, 15, Vector2(4, 4), Palette.c.line)
+	photo_grid_selector.add_child(grid_pill)
+	var grid_row := HBoxContainer.new()
+	grid_row.add_theme_constant_override("separation", 4)
+	grid_pill.add_child(grid_row)
+	photo_grid_buttons.clear()
+	for grid_size in [3, 4, 5, 6]:
+		var grid_button := Button.new()
+		grid_button.text = "%d×%d" % [grid_size, grid_size]
+		grid_button.custom_minimum_size.y = 46
+		grid_button.size_flags_horizontal = SIZE_EXPAND_FILL
+		grid_button.add_theme_font_override("font", Palette.font(700, true))
+		grid_button.add_theme_font_size_override("font_size", 15)
+		grid_button.pressed.connect(func():
+			photo_grid_size = grid_size
+			_update_seg(photo_grid_buttons, photo_grid_size))
+		grid_row.add_child(grid_button)
+		photo_grid_buttons[grid_size] = grid_button
+	confirm.content.add_child(photo_grid_selector)
 	confirm.content.add_child(_spacer(22))
 	var buttons := _button_row("Keep playing", "Start new")
 	confirm.content.add_child(buttons)
-	(buttons.get_child(0) as Button).pressed.connect(func(): _close(confirm))
-	(buttons.get_child(1) as Button).pressed.connect(func():
+	confirm_cancel_button = buttons.get_child(0) as Button
+	confirm_start_button = buttons.get_child(1) as Button
+	confirm_cancel_button.pressed.connect(func(): _close(confirm))
+	confirm_start_button.pressed.connect(func():
 		var action := pending_action
 		pending_action = Callable()
 		_close(confirm)
 		if action.is_valid():
 			action.call())
-	confirm.on_close = func(): pending_action = Callable()
+	confirm.on_close = func():
+		pending_action = Callable()
+		photo_grid_selector.visible = false
 
 # --- Rewarded ad: unlock the next level now ---
 
@@ -1107,7 +1475,9 @@ func _on_rewarded_finished(earned: bool) -> void:
 	var category: String = unlock_target[0]
 	var index: int = unlock_target[1]
 	unlock_target = []
-	unlocked_tier = maxi(unlocked_tier, index)
+	unlocked_by_category[category] = maxi(_category_unlock(category), index)
+	if category == _current_category():
+		unlocked_tier = _category_unlock(category)
 	_save()
 	_close(unlock)
 	_close(gallery)
@@ -1226,7 +1596,7 @@ func _open(ov: Overlay) -> void:
 	if ov in stack:
 		return
 	stack.append(ov)
-	ads.set_banner_visible(false)
+	_reset_banner_idle()
 	if ov.on_open.is_valid():
 		ov.on_open.call()
 	ov.root.move_to_front()
@@ -1254,7 +1624,7 @@ func _close(ov: Overlay) -> void:
 		return
 	stack.erase(ov)
 	if stack.is_empty():
-		ads.set_banner_visible(true)
+		_reset_banner_idle()
 	if ov.on_close.is_valid():
 		ov.on_close.call()
 	if ov.tween:

@@ -36,6 +36,14 @@ var _peek_on := false
 var _press_pos := Vector2.ZERO
 var _press_cell := -1
 var _pressing := false
+var _dragging := false
+var _drag_tile := -1
+var _drag_position := Vector2.ZERO
+var _drag_start_position := Vector2.ZERO
+var _drag_axis := Vector2.ZERO
+var _drag_path_tiles: Array[int] = []
+var _drag_invalid := false
+var _drag_feedback_sent := false
 var _thumb_scale := 1.0
 
 func _ready() -> void:
@@ -154,13 +162,14 @@ func _try_move(p: int) -> void:
 	if is_solved:
 		solved.emit()
 
-func _reject(p: int) -> void:
+func _reject(p: int, buzz: bool = true) -> void:
 	var tile := pieces[p]
 	if tile == EMPTY:
 		return
 	_shake[tile] = 0.26
 	set_process(true)
-	rejected.emit()
+	if buzz:
+		rejected.emit()
 
 func _check_solved() -> bool:
 	if pieces.size() != grid_size * grid_size + 1 or pieces[grid_size * grid_size] != EMPTY:
@@ -282,9 +291,16 @@ func _draw() -> void:
 	var inset := lerpf(2.0, 0.0, _solve_t)
 	var radius := lerpf(8.0, 0.0, _solve_t)
 	var piece_uv := Vector2.ONE / grid_size
-	for tile in _shown:
+	var tile_order: Array = _shown.keys()
+	if _dragging and tile_order.has(_drag_tile):
+		tile_order.erase(_drag_tile)
+		tile_order.append(_drag_tile)  # Draw the held tile over its neighbours.
+	for tile in tile_order:
 		var shown: Vector2 = _shown[tile]
-		var rect := Rect2(o + shown * cell, Vector2(cell, cell)).grow(-inset)
+		var tile_position: Vector2 = o + shown * cell
+		if _dragging and _drag_path_tiles.has(tile):
+			tile_position += _drag_position - _drag_start_position
+		var rect := Rect2(tile_position, Vector2(cell, cell)).grow(-inset)
 		if _shake.has(tile):
 			var phase: float = 1.0 - _shake[tile] / 0.26
 			rect.position.x += sin(phase * PI * 3.0) * 4.0 * (1.0 - phase)
@@ -399,32 +415,138 @@ func _gui_input(event: InputEvent) -> void:
 		_pressing = true
 		_press_pos = mb.position
 		_press_cell = _cell_at(mb.position)
+		_dragging = false
+		_drag_tile = -1
+		_drag_invalid = false
+		_drag_feedback_sent = false
+		if _press_cell >= 0 and _press_cell < pieces.size() and pieces[_press_cell] != EMPTY:
+			var m := _metrics()
+			var shown: Vector2 = _shown.get(pieces[_press_cell], Vector2.ZERO)
+			var tile_top_left: Vector2 = m.origin + shown * m.cell
+			_drag_tile = pieces[_press_cell]
+			_drag_position = tile_top_left
+			_drag_start_position = tile_top_left
+			var piece_coord := _coord(_press_cell)
+			var gap_coord := _coord(pieces.find(EMPTY))
+			if piece_coord.y == gap_coord.y:
+				_drag_axis = Vector2(signi(gap_coord.x - piece_coord.x), 0)
+			elif piece_coord.x == gap_coord.x:
+				_drag_axis = Vector2(0, signi(gap_coord.y - piece_coord.y))
+			else:
+				_drag_axis = Vector2.ZERO
+			_drag_path_tiles.clear()
+			if _drag_axis == Vector2.ZERO:
+				_drag_path_tiles.append(_drag_tile)
+			else:
+				var path_step := Vector2i(signi(gap_coord.x - piece_coord.x), signi(gap_coord.y - piece_coord.y))
+				var path_cell := piece_coord
+				while path_cell != gap_coord:
+					var path_index := _at(path_cell.y, path_cell.x)
+					if path_index >= 0 and pieces[path_index] != EMPTY:
+						_drag_path_tiles.append(pieces[path_index])
+					path_cell += path_step
 		set_process(true)
 		return
 	if not _pressing:
 		return
+	if _drag_tile >= 0:
+		_update_drag(mb.position)
 	_pressing = false
 	set_process(true)
 	var d: Vector2 = mb.position - _press_pos
 	if _press_cell == -3:
+		_drag_tile = -1
+		_dragging = false
 		if _cell_at(mb.position) == -3:
 			thumb_pressed.emit()
 		return
-	if _press_cell < 0 or pieces[_press_cell] == EMPTY:
+	if _press_cell < 0 or _press_cell >= pieces.size() or pieces[_press_cell] == EMPTY:
+		_dragging = false
+		_drag_tile = -1
 		return
 	if maxf(absf(d.x), absf(d.y)) < 16.0:
+		_dragging = false
+		_drag_tile = -1
+		_drag_invalid = false
+		_drag_feedback_sent = false
 		_try_move(_press_cell)
+		queue_redraw()
 		return
 	if is_solved:
+		_dragging = false
+		_drag_tile = -1
+		queue_redraw()
 		return
-	var from := _coord(_press_cell)
-	var to := _coord(pieces.find(EMPTY))
-	var ok: bool
-	if absf(d.x) > absf(d.y):
-		ok = from.y == to.y and signf(d.x) == signf(to.x - from.x)
+	var ok := false
+	if _dragging:
+		var along := d.dot(_drag_axis)
+		var perpendicular := (d - _drag_axis * along).length()
+		ok = _drag_axis != Vector2.ZERO and along >= 16.0 and along >= perpendicular
 	else:
-		ok = from.x == to.x and signf(d.y) == signf(to.y - from.y)
+		var from := _coord(_press_cell)
+		var to := _coord(pieces.find(EMPTY))
+		if absf(d.x) > absf(d.y):
+			ok = from.y == to.y and signf(d.x) == signf(to.x - from.x)
+		else:
+			ok = from.x == to.x and signf(d.y) == signf(to.y - from.y)
 	if ok:
+		if _dragging:
+			_apply_drag_preview_to_shown()
+		_dragging = false
+		_drag_tile = -1
+		_drag_invalid = false
+		_drag_feedback_sent = false
 		_try_move(_press_cell)
 	else:
-		_reject(_press_cell)
+		if _dragging:
+			_apply_drag_preview_to_shown()
+		_dragging = false
+		_drag_tile = -1
+		_drag_invalid = false
+		_reject(_press_cell, not _drag_feedback_sent)
+		_drag_feedback_sent = false
+	queue_redraw()
+
+func _apply_drag_preview_to_shown() -> void:
+	if _drag_path_tiles.is_empty():
+		return
+	var m := _metrics()
+	var offset: Vector2 = (_drag_position - _drag_start_position) / m.cell
+	for tile in _drag_path_tiles:
+		if _shown.has(tile):
+			_shown[tile] = _shown[tile] + offset
+
+func _input(event: InputEvent) -> void:
+	if not _pressing:
+		return
+	var motion := event as InputEventMouseMotion
+	var screen_drag := event as InputEventScreenDrag
+	if _press_cell < 0 or _press_cell >= pieces.size() or _drag_tile < 0:
+		return
+	if motion != null:
+		_update_drag((make_input_local(motion) as InputEventMouseMotion).position)
+	elif screen_drag != null:
+		_update_drag((make_input_local(screen_drag) as InputEventScreenDrag).position)
+
+func _update_drag(pointer: Vector2) -> void:
+	var movement := pointer - _press_pos
+	if not _dragging and movement.length() >= 16.0:
+		_dragging = true
+	if not _dragging:
+		return
+	var along := movement.dot(_drag_axis)
+	var perpendicular := movement - _drag_axis * along
+	var cell: float = _metrics().cell
+	var tolerance := maxf(10.0, cell * 0.12)
+	var perpendicular_limit := maxf(tolerance, maxf(along, 0.0))
+	var invalid := _drag_axis == Vector2.ZERO or along < -tolerance or perpendicular.length() > perpendicular_limit
+	if not invalid:
+		_drag_position = _drag_start_position + _drag_axis * clampf(along, 0.0, cell)
+	if invalid and not _drag_invalid:
+		_shake[_drag_tile] = 0.16
+		set_process(true)
+		if not _drag_feedback_sent:
+			rejected.emit()
+			_drag_feedback_sent = true
+	_drag_invalid = invalid
+	queue_redraw()

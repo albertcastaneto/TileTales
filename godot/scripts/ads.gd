@@ -30,7 +30,9 @@ var _rewarded  # RewardedAd
 var _loading_rewarded := false
 var _earned := false
 var _started := false
-var _banner_visible := true
+var _banner_visible := false
+var _banner_tween: Tween
+var _banner_y_dp := 0.0
 
 func start() -> void:
 	live = OS.get_name() == "Android" and Engine.has_singleton("PoingGodotAdMob") and _cls("MobileAds") != null
@@ -61,14 +63,44 @@ func show_rewarded() -> bool:
 	_rewarded.show(listener)
 	return true
 
-## Native banners draw above the game, so hide the banner while a sheet or dialog is open.
-func set_banner_visible(on: bool) -> void:
+## Native banners draw above the game. An idle banner slides up; input hides it immediately.
+func set_banner_visible(on: bool, animate: bool = false) -> void:
 	_banner_visible = on
+	if not _banner:
+		return
+	if _banner_tween and _banner_tween.is_running():
+		_banner_tween.kill()
+	if not on:
+		_banner.hide()
+		return
+	if not animate:
+		_banner.set_position(_banner_position(_banner_rest_y_dp()))
+		_banner.show()
+		return
+	_banner_y_dp = _banner_hidden_y_dp()
+	_banner.set_position(_banner_position(int(_banner_y_dp)))
+	_banner.show()
+	_banner_tween = create_tween()
+	_banner_tween.tween_method(_move_banner_to, _banner_y_dp, _banner_rest_y_dp(), 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+func _move_banner_to(y_dp: float) -> void:
+	_banner_y_dp = y_dp
 	if _banner:
-		if on:
-			_banner.show()
-		else:
-			_banner.hide()
+		_banner.set_position(_banner_position(roundi(y_dp)))
+
+func _banner_position(y_dp: int):
+	return _cls("AdPosition").custom(0, y_dp)
+
+func _banner_density() -> float:
+	return maxf(1.0, DisplayServer.screen_get_dpi() / 160.0)
+
+func _banner_rest_y_dp() -> float:
+	var safe := DisplayServer.get_display_safe_area()
+	var safe_bottom := float(safe.end.y) if safe.size.y > 0 else float(DisplayServer.screen_get_size().y)
+	return maxf(0.0, safe_bottom / _banner_density() - float(_banner.ad_size.height))
+
+func _banner_hidden_y_dp() -> float:
+	return float(DisplayServer.window_get_size().y) / _banner_density() + 8.0
 
 func show_privacy_options() -> void:
 	if live:
@@ -119,14 +151,15 @@ func _to_units(pixels: float) -> float:
 func _load_banner() -> void:
 	var size_class = _cls("AdSize")
 	var size = size_class.get_current_orientation_anchored_adaptive_banner_ad_size(size_class.FULL_WIDTH)
-	_banner = _cls("AdView").new(_unit(BANNER_UNIT, TEST_BANNER), size, _cls("AdPosition").BOTTOM)
+	_banner = _cls("AdView").new(_unit(BANNER_UNIT, TEST_BANNER), size, _banner_position(int(_banner_hidden_y_dp())))
+	_banner.hide()
 	# Reserve the adaptive banner's height straight away, so the board doesn't jump when the ad arrives.
 	banner_height = _to_units(size.height * DisplayServer.screen_get_dpi() / 160.0)
 	banner_changed.emit()
 	_banner.ad_listener.on_ad_loaded = func():
 		banner_height = _to_units(_banner.get_height_in_pixels())
 		banner_changed.emit()
-		set_banner_visible(_banner_visible)
+		set_banner_visible(_banner_visible, _banner_visible)
 	_banner.ad_listener.on_ad_failed_to_load = func(_error):
 		get_tree().create_timer(RETRY_SECONDS).timeout.connect(func(): _banner.load_ad(_cls("AdRequest").new()))
 	_banner.load_ad(_cls("AdRequest").new())
