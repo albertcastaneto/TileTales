@@ -151,6 +151,7 @@ var tips_body: VBoxContainer
 var theme_buttons := {}
 var switches := {}
 var chip_buttons := {}
+var _chip_swipe := {}  # The current swipe over a category chip: start point, starting scroll, axis (0 none, 1 row, 2 sheet).
 var gallery_grid: GridContainer
 var preview_image: RoundedImage
 var win_image: RoundedImage
@@ -1200,7 +1201,10 @@ func _build_gallery() -> void:
 			chip.custom_minimum_size.y = 48
 			chip.add_theme_font_override("font", Palette.font(600))
 			chip.add_theme_font_size_override("font_size", 17)
-			chip.pressed.connect(_show_category.bind(category))
+			chip.pressed.connect(func():
+				if _chip_swipe.get("axis", 0) == 0:
+					_show_category(category))
+			_swipe_with(chip, scroll, gallery.scroll)
 			chips.add_child(chip)
 			chip_buttons[category] = chip
 		c.add_child(_spacer(16))
@@ -1214,6 +1218,27 @@ func _build_gallery() -> void:
 	var credit := _label("Solve puzzles to unlock the next level within each category. Pictures work offline.", 16, 400, Palette.c.muted)
 	credit.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	c.add_child(credit)
+
+## Buttons keep the touch for themselves, so a swipe that starts on a chip would never reach its row.
+## Scroll the row for a sideways swipe and the sheet for a vertical one; a swipe never counts as a tap.
+func _swipe_with(chip: Button, row: ScrollContainer, sheet: ScrollContainer) -> void:
+	chip.gui_input.connect(func(event: InputEvent):
+		var mb := event as InputEventMouseButton
+		if mb != null and mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			_chip_swipe = {"start": mb.global_position, "h": row.scroll_horizontal, "v": sheet.scroll_vertical, "axis": 0}
+			return
+		var motion := event as InputEventMouseMotion
+		if motion == null or _chip_swipe.is_empty() or motion.button_mask & MOUSE_BUTTON_MASK_LEFT == 0:
+			return
+		var d: Vector2 = motion.global_position - _chip_swipe.start
+		if _chip_swipe.axis == 0 and d.length() > 10.0:
+			_chip_swipe.axis = 1 if absf(d.x) >= absf(d.y) else 2
+		if _chip_swipe.axis == 1:
+			row.scroll_horizontal = int(_chip_swipe.h - d.x)
+		elif _chip_swipe.axis == 2:
+			sheet.scroll_vertical = int(_chip_swipe.v - d.y)
+		if _chip_swipe.axis != 0:
+			chip.accept_event())
 
 func _open_gallery() -> void:
 	_show_category(active_category)
